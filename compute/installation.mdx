@@ -1,8 +1,152 @@
 ---
 title: "Installation"
-description: "Install the 0G Compute SDK and configure your environment for testnet or mainnet."
+description: "Install the 0G Compute Python SDK, configure environment variables, and initialize your first broker on testnet or mainnet."
 ---
 
+Get the SDK installed, connect to a 0G network, and create your first broker in under five minutes.
+
+## Prerequisites
+
+- Python 3.8 or higher
+- A wallet with 0G tokens (testnet or mainnet)
+- An EVM-compatible private key for signing transactions
+
 <Note>
-This page is a stub. Content coming soon.
+  Earlier versions required Node.js for cryptographic operations. As of v0.2.0 the SDK is pure Python — Node.js is **not** required.
 </Note>
+
+## Install the SDK
+
+Install the published package from PyPI:
+
+```bash
+pip install 0g-inference-sdk
+```
+
+<Tip>
+  We recommend installing into a virtual environment:
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate    # macOS / Linux
+  # venv\Scripts\activate     # Windows
+  pip install 0g-inference-sdk
+  ```
+</Tip>
+
+### Verify the install
+
+```python
+from zerog_py_sdk import __version__
+print(__version__)
+```
+
+If this prints a version number without error, you're set.
+
+## Configure environment variables
+
+Create a `.env` file in your project root with your private key and an RPC URL:
+
+<Tabs>
+  <Tab title="Testnet">
+    ```bash
+    PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+    RPC_URL=https://evmrpc-testnet.0g.ai
+    NETWORK=testnet
+    ```
+  </Tab>
+  <Tab title="Mainnet">
+    ```bash
+    PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+    RPC_URL=https://evmrpc.0g.ai
+    NETWORK=mainnet
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Never commit your `.env` file to version control. Add it to `.gitignore`.
+</Warning>
+
+The SDK can auto-detect the network from the chain ID, so `NETWORK` is optional when `RPC_URL` is set.
+
+## Get testnet tokens
+
+You need 0G tokens to fund inference requests. For testnet:
+
+<Steps>
+  <Step title="Note your wallet address">
+    ```python
+    from zerog_py_sdk import create_broker
+    broker = create_broker(private_key="0xYOUR_PRIVATE_KEY", network="testnet")
+    print(broker.get_address())
+    ```
+  </Step>
+  <Step title="Visit the faucet">
+    Open [faucet.0g.ai](https://faucet.0g.ai) and request tokens for your address.
+  </Step>
+  <Step title="Confirm receipt">
+    Check your balance on the [Galileo block explorer](https://chainscan-galileo.0g.ai).
+  </Step>
+</Steps>
+
+## Create your first broker
+
+The broker is your main entry point to the SDK. It wires up the ledger, inference, and fine-tuning managers from a single factory call.
+
+```python
+from zerog_py_sdk import create_broker
+
+broker = create_broker(
+    private_key="0xYOUR_PRIVATE_KEY",
+    network="testnet",  # or "mainnet"
+)
+
+print(f"Connected as {broker.get_address()}")
+```
+
+### Load credentials from `.env`
+
+If you created a `.env` file above, use `create_broker_from_env`:
+
+```python
+from zerog_py_sdk import create_broker_from_env
+
+broker = create_broker_from_env()  # reads PRIVATE_KEY, RPC_URL, NETWORK
+print(broker.get_address())
+```
+
+This requires `python-dotenv`. Install it with `pip install python-dotenv` if you haven't already.
+
+## Network configuration
+
+| Network | Chain ID | RPC URL |
+|---------|----------|---------|
+| Mainnet | `16661` | `https://evmrpc.0g.ai` |
+| Testnet (Galileo) | `16602` | `https://evmrpc-testnet.0g.ai` |
+
+Contract addresses for the Ledger, Inference, and Fine-tuning contracts are bundled with the SDK and resolved automatically from the chain ID. You can override them via `create_broker(..., ledger_address=..., inference_address=...)` if you're working against a custom deployment.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Failed to connect to RPC endpoint">
+    Check that the RPC URL is reachable (`curl https://evmrpc-testnet.0g.ai`) and that your machine has internet access. The SDK raises `ConfigurationError` on connection failure.
+  </Accordion>
+  <Accordion title="ModuleNotFoundError: No module named 'zerog_py_sdk'">
+    The package installs as `0g-inference-sdk` on PyPI but is imported as `zerog_py_sdk`. Make sure you activated the correct virtual environment.
+  </Accordion>
+  <Accordion title="PRIVATE_KEY not found in environment">
+    Either pass the key explicitly to `create_broker(private_key=...)` or ensure your `.env` file is in the working directory and `python-dotenv` is installed.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Run your first inference" icon="bolt" href="/compute/inference">
+    Discover providers, fund your account, and send a chat completion request.
+  </Card>
+  <Card title="Account management" icon="wallet" href="/compute/account-management">
+    Deposit, transfer, and refund funds on the Ledger contract.
+  </Card>
+</CardGroup>
