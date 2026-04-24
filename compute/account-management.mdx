@@ -1,8 +1,294 @@
 ---
 title: "Account Management"
-description: "Manage your ledger account: deposits, transfers, refunds, and auto-funding."
+description: "Manage your 0G Compute ledger: deposits, provider sub-accounts, transfers, refunds, and automatic top-ups."
 ---
 
+Every 0G Compute user holds a **ledger account** — a single on-chain prepaid balance backing every AI service you use. Each provider you interact with holds a **sub-account** under your ledger with its own locked balance. This page covers every ledger operation the SDK exposes.
+
+## Account model
+
+```
+Main Ledger (your wallet)
+├── Available balance   — freely transferable
+├── Locked balance       — allocated to provider sub-accounts
+│
+├── Provider A sub-account
+│   ├── Balance          — what Provider A can draw from
+│   └── Pending refund   — funds queued for return to your ledger
+│
+└── Provider B sub-account
+    ├── Balance
+    └── Pending refund
+```
+
+- **Ledger** — one per wallet. Holds unallocated funds.
+- **Sub-accounts** — one per (user, provider) pair. Created automatically on the first `transfer_fund` or `acknowledge_provider_signer`.
+- **Service types** — each sub-account is scoped to a service type (`"inference"` or `"fine-tuning"`). The same provider can hold two independent sub-accounts.
+
+All balances are stored in **wei** (1 OG = 10¹⁸ wei). The SDK ships `og_to_wei()` / `wei_to_og()` helpers:
+
+```python
+from zerog_py_sdk.utils import og_to_wei, wei_to_og
+
+og_to_wei("1.5")       # 1_500_000_000_000_000_000
+wei_to_og(10**18)      # 1.0
+```
+
+## Create or top up your ledger
+
+<Warning>
+  `add_ledger` enforces a minimum of **3 OG** — the contract's `MIN_ACCOUNT_BALANCE`. Smaller deposits raise `ValueError`.
+</Warning>
+
+```python
+# First time: create a ledger with at least 3 OG
+broker.ledger.add_ledger("3")
+
+# Later: top up an existing ledger (any positive amount)
+broker.ledger.deposit_fund("1")
+```
+
+Both methods return a parsed transaction receipt dict:
+
+```python
+{
+    "transaction_hash": "0xabc...",
+    "block_number":     12345,
+    "gas_used":         98765,
+    "status":           1,
+    "success":          True,
+}
+```
+
+### Deposit on behalf of another wallet
+
+`deposit_fund_for` lets you fund a different address's ledger:
+
+```python
+broker.ledger.deposit_fund_for(
+    recipient = "0xOtherWallet...",
+    amount    = "0.5",
+)
+```
+
+Useful for funding service accounts run by applications you deploy.
+
+## Query balances
+
+### Simple balance
+
+`get_ledger()` returns a `LedgerAccount` with `balance`, `locked`, and `total_balance` — all in wei:
+
+```python
+account = broker.ledger.get_ledger()
+print(f"Available: {account.balance / 10**18} OG")
+print(f"Locked:    {account.locked / 10**18} OG")
+print(f"Total:     {account.total_balance / 10**18} OG")
+```
+
+`account.available` is an alias for `account.balance`. If no ledger exists yet, `get_ledger()` raises `ContractError`.
+
+### Detailed balance with provider breakdown
+
+`get_ledger_with_detail()` includes per-provider balances for both inference and fine-tuning sub-accounts:
+
+```python
+detail = broker.ledger.get_ledger_with_detail(
+    inference_contract  = broker.serving_contract,
+    fine_tuning_contract = broker.fine_tuning._contract.contract,
+)
+
+print(f"Total: {detail.total_balance / 10**18} OG")
+print(f"Available: {detail.available_balance / 10**18} OG")
+
+for provider, balance, pending in detail.inference_providers:
+    print(f"  {provider}: {balance / 10**18} OG (pending refund: {pending / 10**18})")
+```
+
+Contract arguments are optional — omit them to get just the list of provider addresses without per-account details.
+
+### List providers with active balances
+
+```python
+providers = broker.ledger.get_providers_with_balance("inference")
+for addr in providers:
+    print(addr)
+```
+
+Pass `"fine-tuning"` for fine-tuning providers.
+
+## Transfer funds to a provider
+
+Before a provider will accept requests, you must move a portion of your ledger into their sub-account. The recommended minimum is **1 OG** — anything smaller will succeed on-chain but may be rejected by the provider's broker.
+
+```python
+from zerog_py_sdk.utils import og_to_wei
+
+broker.ledger.transfer_fund(
+    provider_address = "0xProvider...",
+    service_type     = "inference",        # or "fine-tuning"
+    amount           = og_to_wei("1"),      # wei
+)
+```
+
+`service_type` must be one of `"inference"` or `"fine-tuning"` — the SDK resolves these to the on-chain registered service name automatically. If you're working against a custom deployment you can pass the exact registered name instead.
+
 <Note>
-This page is a stub. Content coming soon.
+  Passing `amount=0` creates the sub-account without moving any funds. This is useful if the provider supports pay-after-use, or if you want to pre-create the account before the first real transfer.
 </Note>
+
+## Reclaim unused funds
+
+Transfers aren't final. You can pull funds from provider sub-accounts back into your ledger, or from your ledger back to your wallet.
+
+### Refund from all providers
+
+```python
+broker.ledger.retrieve_fund("inference")
+```
+
+Moves unused balance from every inference provider sub-account back into the main ledger.
+
+### Refund from a specific provider
+
+```python
+broker.ledger.retrieve_fund_from_provider(
+    provider_address = "0xProvider...",
+    service_type     = "inference",
+)
+```
+
+### Withdraw from the ledger to your wallet
+
+```python
+broker.ledger.refund("0.5")
+```
+
+<Warning>
+  Refunds are subject to the contract's lock time (typically 24 hours). Funds become withdrawable only after the lock period expires.
+</Warning>
+
+## Close an account
+
+When you're completely done with 0G Compute, you can delete your ledger entirely:
+
+```python
+# Reclaim everything first
+broker.ledger.retrieve_fund("inference")
+broker.ledger.retrieve_fund("fine-tuning")
+broker.ledger.refund("ALL_REMAINING_BALANCE_IN_OG")
+
+# Then remove the ledger
+broker.ledger.delete_ledger()
+```
+
+<Warning>
+  `delete_ledger` is destructive. Any unwithdrawn balance is lost. Always refund first.
+</Warning>
+
+## Auto-funding
+
+For long-running processes (e.g. a production inference server), the SDK can keep a provider sub-account topped up automatically. A daemon thread checks the balance every `interval_ms` and transfers more funds when it falls below a threshold.
+
+```python
+from zerog_py_sdk import AutoFundingConfig
+
+broker.inference.start_auto_funding(
+    provider_address = "0xProvider...",
+    config = AutoFundingConfig(
+        interval_ms       = 30_000,   # check every 30 seconds (default)
+        buffer_multiplier = 2,         # maintain 2× the minimum locked balance (default)
+    ),
+)
+
+# ...your app runs...
+
+broker.inference.stop_auto_funding("0xProvider...")    # stop one provider
+broker.inference.stop_auto_funding()                    # stop all
+```
+
+Behavior:
+
+- Runs immediately on start, then every `interval_ms` thereafter
+- Computes `required = buffer_multiplier × MIN_LOCKED_BALANCE` (500 wei minimum)
+- Calls `transfer_fund` to add `required - available` whenever the sub-account drops below the threshold
+- Thread is a **daemon** — it exits with your process and won't block shutdown
+- Silently ignores transient failures so the loop never crashes
+
+### Check auto-funding status
+
+```python
+if broker.inference.has_auto_funding("0xProvider..."):
+    print("Auto-funding active")
+```
+
+## Full lifecycle example
+
+```python
+import os
+from zerog_py_sdk import create_broker
+from zerog_py_sdk.utils import og_to_wei
+
+broker = create_broker(
+    private_key = os.environ["PRIVATE_KEY"],
+    network     = "testnet",
+)
+
+# 1. Create a ledger (or skip if it exists)
+try:
+    broker.ledger.get_ledger()
+except Exception:
+    broker.ledger.add_ledger("3")
+
+# 2. Top up
+broker.ledger.deposit_fund("2")
+
+# 3. Provision provider sub-account
+provider = "0xProviderAddress..."
+broker.inference.acknowledge_provider_signer(provider)
+broker.ledger.transfer_fund(provider, "inference", og_to_wei("1"))
+
+# 4. Run inference (omitted — see the Inference guide)
+# ...
+
+# 5. Reclaim when done
+broker.ledger.retrieve_fund_from_provider(provider, "inference")
+broker.ledger.refund("1")
+```
+
+## API at a glance
+
+### `LedgerManager`
+
+| Method | Returns |
+|--------|---------|
+| `add_ledger(amount: str)` | receipt dict — creates ledger, min 3 OG |
+| `deposit_fund(amount: str)` | receipt dict — top up existing ledger |
+| `deposit_fund_for(recipient, amount)` | receipt dict — fund another address |
+| `get_ledger()` | `LedgerAccount(balance, locked, total_balance)` |
+| `get_ledger_with_detail(inference_contract=None, fine_tuning_contract=None)` | `LedgerDetail` |
+| `transfer_fund(provider, service_type, amount: int = 0)` | receipt dict — `service_type` is `"inference"` or `"fine-tuning"` |
+| `retrieve_fund(service_type)` | receipt dict — reclaim from all providers |
+| `retrieve_fund_from_provider(provider, service_type)` | receipt dict |
+| `refund(amount: str)` | receipt dict — withdraw from ledger |
+| `delete_ledger()` | receipt dict — destructive |
+| `get_providers_with_balance(service_type)` | `list[str]` |
+
+### `InferenceManager` auto-funding
+
+| Method | Returns |
+|--------|---------|
+| `start_auto_funding(provider, config=None)` | `None` |
+| `stop_auto_funding(provider=None)` | `None` |
+| `has_auto_funding(provider)` | `bool` |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Service discovery" icon="magnifying-glass" href="/compute/service-discovery">
+    Find providers and inspect their service metadata.
+  </Card>
+  <Card title="Inference" icon="bolt" href="/compute/inference">
+    Make authenticated AI requests using funded provider sub-accounts.
+  </Card>
+</CardGroup>
