@@ -1,8 +1,222 @@
 ---
 title: "Large Files"
-description: "Upload multi-gigabyte files using splitable uploads and download fragments."
+description: "Upload multi-gigabyte files with splitable uploads and reassemble them with fragment downloads on 0G Storage."
 ---
 
+The standard `indexer.upload()` call handles files up to a few gigabytes comfortably. For larger files, the SDK provides **splitable uploads** that automatically split the file into fragments, submit each fragment independently, and return a list of root hashes. The corresponding **fragment downloads** reassemble them back into a single file.
+
+## When to use splitable uploads
+
+- Your file is larger than 4 GB (the default fragment size)
+- You want to parallelize uploads across multiple batches
+- You need per-fragment retry granularity
+
+For files under 4 GB, stick with `indexer.upload()` — it's simpler and atomic.
+
+## Splitable upload
+
+`Uploader.splitable_upload()` splits the file, uploads each fragment, and returns a list of root hashes in order.
+
+```python
+import os
+from eth_account import Account
+from core.file import ZgFile
+from core.indexer import Indexer
+from core.uploader import Uploader
+from contracts.flow import FlowContract
+from web3 import Web3
+
+PRIVATE_KEY    = os.environ["PRIVATE_KEY"]
+BLOCKCHAIN_RPC = "https://evmrpc-testnet.0g.ai"
+INDEXER_RPC    = "https://indexer-storage-testnet-turbo.0g.ai"
+
+indexer = Indexer(INDEXER_RPC)
+account = Account.from_key(PRIVATE_KEY)
+
+# Pick storage nodes via the indexer
+clients, err = indexer.select_nodes(expected_replica=1)
+if err:
+    raise err
+
+# Build the Flow contract client
+web3 = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC))
+status = clients[0].get_status()
+flow   = FlowContract(web3, status["networkIdentity"]["flowAddress"])
+
+# Construct the uploader
+uploader = Uploader(clients, BLOCKCHAIN_RPC, flow)
+
+# Open the large file
+file = ZgFile.from_file_path("./large-video.mp4")
+
+# Upload with splitable option
+result, err = uploader.splitable_upload(
+    file,
+    opts={
+        "account":          account,
+        "tags":             b"\x00",
+        "finalityRequired": True,
+        "fragmentSize":     4 * 1024 * 1024 * 1024,   # 4 GB per fragment (default)
+        "batchSize":        10,                         # fragments per batch (default)
+    },
+)
+
+file.close()
+
+if err:
+    raise err
+
+print(f"Uploaded {len(result['rootHashes'])} fragments")
+for i, (tx, root) in enumerate(zip(result["txHashes"], result["rootHashes"])):
+    print(f"  fragment {i}: {root} (tx {tx})")
+```
+
+### Return value
+
+`splitable_upload` returns `({'txHashes': [...], 'rootHashes': [...]}, err)`. The lists preserve fragment order — index 0 is the first fragment, index 1 is the second, and so on.
+
+Save the `rootHashes` list — you'll need it to reassemble the file on download.
+
+### Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `account` | `LocalAccount` | required | Signer for Flow contract transactions |
+| `fragmentSize` | `int` | `4 GB` | Max bytes per fragment (rounded up to a power of 2) |
+| `batchSize` | `int` | `10` | Fragments uploaded per batch |
+| `tags` | `bytes` | `b"\x00"` | Per-fragment tag bytes |
+| `finalityRequired` | `bool` | `True` | Wait for on-chain finality |
+| `expectedReplica` | `int` | `1` | Replica count per fragment |
+
 <Note>
-This page is a stub. Content coming soon.
+  `fragmentSize` is always aligned up to the nearest power of 2 and clamped to the 256-byte chunk minimum. A value of `3 GB` becomes `4 GB` internally.
 </Note>
+
+### Behavior for small files
+
+If `file.size() <= fragmentSize`, `splitable_upload` falls back to a single `upload_file` call. The return shape is the same — `rootHashes` will just have one entry.
+
+## Download fragments
+
+To retrieve a multi-fragment file, use `Downloader.download_fragments()` with the list of root hashes in their original order. The downloader pulls each fragment, writes it to a temp file, and concatenates them into the final output.
+
+```python
+from core.indexer import Indexer
+from core.downloader import Downloader
+
+indexer = Indexer("https://indexer-storage-testnet-turbo.0g.ai")
+
+# Use the same node selection as upload, or query for each root separately
+clients, err = indexer.select_nodes(expected_replica=1)
+if err:
+    raise err
+
+downloader = Downloader(clients)
+
+err = downloader.download_fragments(
+    roots     = ["0xabc...", "0xdef...", "0x123..."],  # in upload order
+    filename  = "./large-video.mp4",
+    with_proof = False,
+)
+
+if err:
+    raise err
+
+print("Reassembled")
+```
+
+<Warning>
+  `download_fragments` fails fast if the output file already exists. Either delete it first or write to a fresh path.
+</Warning>
+
+### Unified `download()` API
+
+`Downloader.download()` accepts either a single root hash or a list — it dispatches to `download_file` or `download_fragments` automatically:
+
+```python
+# Single file
+err = downloader.download("0xabc...", "./output.bin")
+
+# Multi-fragment
+err = downloader.download(["0xabc...", "0xdef..."], "./output.bin")
+```
+
+## End-to-end example
+
+```python
+import os
+from eth_account import Account
+from web3 import Web3
+
+from core.file import ZgFile
+from core.indexer import Indexer
+from core.uploader import Uploader
+from core.downloader import Downloader
+from contracts.flow import FlowContract
+
+PRIVATE_KEY    = os.environ["PRIVATE_KEY"]
+BLOCKCHAIN_RPC = "https://evmrpc-testnet.0g.ai"
+INDEXER_RPC    = "https://indexer-storage-testnet-turbo.0g.ai"
+
+indexer = Indexer(INDEXER_RPC)
+account = Account.from_key(PRIVATE_KEY)
+
+# --- Select nodes, build Flow client ---
+clients, err = indexer.select_nodes(expected_replica=1)
+if err:
+    raise err
+web3 = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC))
+flow = FlowContract(web3, clients[0].get_status()["networkIdentity"]["flowAddress"])
+
+# --- Upload a large file ---
+file = ZgFile.from_file_path("./5gb-file.bin")
+uploader = Uploader(clients, BLOCKCHAIN_RPC, flow)
+
+result, err = uploader.splitable_upload(file, {
+    "account":          account,
+    "fragmentSize":     4 * 1024 * 1024 * 1024,
+    "finalityRequired": True,
+})
+file.close()
+if err:
+    raise err
+
+roots = result["rootHashes"]
+print(f"Uploaded {len(roots)} fragments")
+
+# --- Download and reassemble (wait 3–5 min for propagation) ---
+downloader = Downloader(clients)
+err = downloader.download_fragments(roots, "./reassembled.bin")
+if err:
+    raise err
+
+print("Done")
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="'Output file already exists'">
+    `download_fragments` refuses to overwrite existing files. Delete the target file first or choose a new path.
+  </Accordion>
+  <Accordion title="A fragment upload fails mid-batch">
+    `splitable_upload` returns the partial result — `rootHashes` will contain only the fragments that succeeded before the failure. You can retry the remaining fragments manually or re-run the whole upload (fragments already on the network will be deduplicated via `skipTx`).
+  </Accordion>
+  <Accordion title="Fragment order mismatch during download">
+    The download output is the byte-wise concatenation of fragments in the order you pass them. You must pass `rootHashes` in the exact order `splitable_upload` returned them — mixing the order corrupts the reassembled file.
+  </Accordion>
+  <Accordion title="Fragment propagation timing">
+    Each fragment goes through the same 3–5 minute propagation window as a regular upload. For multi-fragment files, all fragments must propagate before download succeeds.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Upload & download" icon="file-arrow-up" href="/storage/storage-sdk">
+    The basic upload/download flow for normal-sized files.
+  </Card>
+  <Card title="Error handling" icon="triangle-exclamation" href="/storage/error-handling">
+    Exception hierarchy, retry logic, and error codes.
+  </Card>
+</CardGroup>
