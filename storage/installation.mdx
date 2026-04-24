@@ -1,8 +1,219 @@
 ---
 title: "Installation"
-description: "Install the 0G Storage SDK and configure network settings for testnet or mainnet."
+description: "Install the 0G Storage Python SDK, configure testnet or mainnet endpoints, and run your first merkle tree computation."
 ---
 
-<Note>
-This page is a stub. Content coming soon.
-</Note>
+Get the SDK installed, connect to a 0G network, and compute your first merkle tree in under five minutes.
+
+## Prerequisites
+
+- Python 3.8 or higher
+- A wallet with 0G tokens for paying storage fees ([get testnet tokens](https://faucet.0g.ai))
+- An EVM-compatible private key for signing Flow contract transactions
+
+## Install the SDK
+
+Install the published package from PyPI:
+
+```bash
+pip install 0g-storage-sdk
+```
+
+<Tip>
+  We recommend a virtual environment:
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate    # macOS / Linux
+  # venv\Scripts\activate     # Windows
+  pip install 0g-storage-sdk
+  ```
+</Tip>
+
+### Dependencies
+
+The SDK installs the following automatically:
+
+- `pycryptodome` — Keccak256 hashing for merkle trees
+- `web3` — blockchain RPC and contract interaction
+- `eth-account` — transaction signing
+- `requests` — HTTP client for indexer and storage nodes
+
+### Verify the install
+
+The package name on PyPI is `0g-storage-sdk`, but because that name isn't a valid Python identifier, the SDK ships its top-level modules as `core`, `utils`, `contracts`, and `models`. Confirm the install by importing a core module:
+
+```python
+from core.merkle import MerkleTree
+
+tree = MerkleTree()
+print("Storage SDK installed — MerkleTree OK")
+```
+
+Or use pip directly:
+
+```bash
+pip show 0g-storage-sdk
+```
+
+See [Import paths](#import-paths) below for the full list.
+
+## Import paths
+
+Storage SDK imports use the top-level `core` and `utils` modules:
+
+```python
+from core.indexer import Indexer
+from core.file import ZgFile
+from core.merkle import MerkleTree
+from core.kv import KvClient, StreamDataBuilder
+from utils.transfer import RetryOpts, tx_with_gas_adjustment
+```
+
+This layout matches the upstream TypeScript SDK's module structure and is preserved for parity.
+
+## Network endpoints
+
+The Storage SDK needs two endpoints:
+
+- **Blockchain RPC** — for Flow contract submissions (shared with the Compute SDK)
+- **Indexer RPC** — for storage node discovery and file location queries
+
+<Tabs>
+  <Tab title="Testnet">
+    ```python
+    BLOCKCHAIN_RPC = "https://evmrpc-testnet.0g.ai"
+    INDEXER_RPC    = "https://indexer-storage-testnet-turbo.0g.ai"
+    CHAIN_ID       = 16602
+    ```
+  </Tab>
+  <Tab title="Mainnet">
+    ```python
+    BLOCKCHAIN_RPC = "https://evmrpc.0g.ai"
+    INDEXER_RPC    = "https://indexer-storage-turbo.0g.ai"
+    CHAIN_ID       = 16661
+    ```
+  </Tab>
+</Tabs>
+
+| Network | Chain ID | Blockchain RPC | Indexer RPC |
+|---------|----------|----------------|-------------|
+| Mainnet | `16661` | `https://evmrpc.0g.ai` | `https://indexer-storage-turbo.0g.ai` |
+| Testnet (Galileo) | `16602` | `https://evmrpc-testnet.0g.ai` | `https://indexer-storage-testnet-turbo.0g.ai` |
+
+## Configure credentials
+
+Keep your private key out of source control. Set it as an environment variable or read it from a `.env` file:
+
+```bash
+# .env
+PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+```
+
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+PRIVATE_KEY = os.environ["PRIVATE_KEY"]
+```
+
+<Warning>
+  Never commit your `.env` file. Add it to `.gitignore`.
+</Warning>
+
+`python-dotenv` is not a direct dependency of the Storage SDK, so install it separately if you want `.env` support: `pip install python-dotenv`.
+
+## Quick sanity check
+
+Compute a merkle root from a byte string — no network calls, no wallet required:
+
+```python
+from core.file import ZgFile
+
+file = ZgFile.from_bytes(b"hello, 0G storage")
+tree, err = file.merkle_tree()
+
+if err:
+    raise err
+
+print(f"Root hash: {tree.root_hash()}")
+print(f"Size:      {file.size()} bytes")
+print(f"Chunks:    {file.num_chunks()}")
+print(f"Segments:  {file.num_segments()}")
+```
+
+If this prints a `0x…` root hash, your install works.
+
+## Connect to an indexer
+
+Initialize the `Indexer` client and confirm connectivity by listing sharded nodes:
+
+```python
+from core.indexer import Indexer
+
+indexer = Indexer("https://indexer-storage-testnet-turbo.0g.ai")
+nodes   = indexer.get_sharded_nodes()
+
+print(f"Trusted nodes: {len(nodes.get('trusted', []))}")
+print(f"Discovered:    {len(nodes.get('discovered', []))}")
+```
+
+A non-zero `trusted` count confirms the indexer is reachable and the network is healthy.
+
+## Get testnet tokens
+
+Storage submissions cost a small on-chain fee. For testnet:
+
+<Steps>
+  <Step title="Derive your wallet address">
+    ```python
+    from eth_account import Account
+    account = Account.from_key(PRIVATE_KEY)
+    print(account.address)
+    ```
+  </Step>
+  <Step title="Request tokens">
+    Visit [faucet.0g.ai](https://faucet.0g.ai) and paste your address.
+  </Step>
+  <Step title="Confirm the balance">
+    Check the [Galileo block explorer](https://chainscan-galileo.0g.ai).
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="ModuleNotFoundError: No module named 'core'">
+    Make sure you installed `0g-storage-sdk` (not `0g_py_storage` directly from git) and that your virtual environment is active. The package exposes top-level modules; if you see a namespace collision with another `core` module in your project, install into a fresh venv.
+  </Accordion>
+  <Accordion title="Failed to connect to indexer">
+    Verify the indexer URL is reachable:
+    ```bash
+    curl https://indexer-storage-testnet-turbo.0g.ai
+    ```
+    If you're behind a corporate proxy, set `HTTPS_PROXY` before running the script.
+  </Accordion>
+  <Accordion title="Merkle root mismatch with TypeScript SDK">
+    The Python and TypeScript SDKs produce byte-exact identical root hashes. A mismatch usually means different input bytes (trailing newlines, encoding differences) or different chunk sizes. Both SDKs default to 256-byte chunks and 256 KB segments — don't override these unless you know you need to.
+  </Accordion>
+  <Accordion title="Upload hangs or times out">
+    Uploads can take 3–5 minutes for files to propagate across shards. The SDK retries transient failures automatically. If it times out entirely, check that your `BLOCKCHAIN_RPC` and `INDEXER_RPC` both resolve and your wallet has enough balance to pay the storage fee.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Upload & download files" icon="file-arrow-up" href="/storage/storage-sdk">
+    End-to-end walkthrough of the upload and download flow.
+  </Card>
+  <Card title="Merkle trees & proofs" icon="diagram-project" href="/storage/merkle-trees">
+    Generate and validate cryptographic proofs for file integrity.
+  </Card>
+  <Card title="KV storage" icon="database" href="/storage/kv-storage">
+    Read and write key-value streams with access control.
+  </Card>
+  <Card title="Large files" icon="file-lines" href="/storage/large-files">
+    Splitable uploads and fragment downloads for multi-GB files.
+  </Card>
+</CardGroup>
