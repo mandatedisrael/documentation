@@ -4,7 +4,7 @@
   "description": "0G Python SDK Documentation",
   "scripts": {
     "dev": "mint dev",
-    "build": "mint export"
+    "build": "mint export && unzip -o export.zip -d out"
   },
   "devDependencies": {
     "@mintlify/cli": "latest"
