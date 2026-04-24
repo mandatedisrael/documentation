@@ -1,8 +1,271 @@
 ---
 title: "Storage SDK"
-description: "Upload and download files on the 0G Storage network with merkle verification."
+description: "Upload and download files on the 0G Storage Network end-to-end using the Python SDK — with merkle tree generation, Flow contract submission, and sharded node routing."
 ---
 
+A file upload on 0G Storage is a three-part operation: the SDK computes a merkle tree, submits the root hash to the Flow contract, and pushes segments to sharded storage nodes. Downloads reverse the process — locate nodes, pull segments, and reassemble. This page walks through the full flow.
+
+## Prerequisites
+
+- Python 3.8 or higher
+- The SDK installed: `pip install 0g-storage-sdk`
+- A wallet with 0G tokens ([get testnet tokens](https://faucet.0g.ai))
+
 <Note>
-This page is a stub. Content coming soon.
+  If you haven't set up the SDK yet, follow the [Installation](/storage/installation) guide first.
 </Note>
+
+## The upload flow
+
+<Steps>
+  <Step title="Create an Indexer client">
+    The indexer discovers storage nodes and coordinates uploads.
+
+    ```python
+    from core.indexer import Indexer
+
+    INDEXER_RPC = "https://indexer-storage-testnet-turbo.0g.ai"
+    indexer = Indexer(INDEXER_RPC)
+    ```
+  </Step>
+
+  <Step title="Load your file">
+    `ZgFile` wraps a file handle and computes merkle trees. Use `from_file_path` for disk files or `from_bytes` for in-memory data.
+
+    ```python
+    from core.file import ZgFile
+
+    file = ZgFile.from_file_path("./data.txt")
+    print(f"Size: {file.size()} bytes")
+    print(f"Chunks: {file.num_chunks()}, Segments: {file.num_segments()}")
+    ```
+  </Step>
+
+  <Step title="Build an account for signing">
+    The SDK uses `eth_account` to sign Flow contract transactions.
+
+    ```python
+    from eth_account import Account
+
+    PRIVATE_KEY = "0xYOUR_PRIVATE_KEY"
+    account = Account.from_key(PRIVATE_KEY)
+    ```
+  </Step>
+
+  <Step title="Upload">
+    `indexer.upload()` handles merkle tree generation, transaction submission, and segment uploads. It returns a `(result, error)` tuple.
+
+    ```python
+    BLOCKCHAIN_RPC = "https://evmrpc-testnet.0g.ai"
+
+    upload_opts = {
+        "tags": b"\x00",
+        "finalityRequired": True,
+        "taskSize": 10,
+        "expectedReplica": 1,
+        "skipTx": False,
+        "account": account,
+    }
+
+    result, err = indexer.upload(
+        file,
+        BLOCKCHAIN_RPC,
+        account,
+        upload_opts,
+    )
+
+    if err is not None:
+        raise err
+
+    print(f"Transaction: {result['txHash']}")
+    print(f"Root hash:   {result['rootHash']}")
+
+    file.close()
+    ```
+
+    <Warning>
+      Always call `file.close()` when done. `ZgFile` holds an open file descriptor.
+    </Warning>
+  </Step>
+</Steps>
+
+### Upload options
+
+The `upload_opts` dict accepts:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `account` | `LocalAccount` | required | Signer for the Flow contract transaction |
+| `tags` | `bytes` | `b"\x00"` | Arbitrary tag bytes stored alongside the file |
+| `finalityRequired` | `bool` | `True` | Wait for the Flow log entry to be finalized |
+| `taskSize` | `int` | `10` | Segments per parallel upload task |
+| `expectedReplica` | `int` | `1` | Number of storage node replicas to target |
+| `skipTx` | `bool` | `False` | Skip the Flow submission if the file was already uploaded |
+| `fee` | `int` | `0` | Storage fee in wei (0 = auto-calculate from market contract) |
+| `submitter` | `str` | account address | Optional override for the on-chain submitter field |
+
+You can also pass `retry_opts` as a third argument — see [Large Files](/storage/large-files) for multi-GB upload patterns.
+
+## The download flow
+
+Download by root hash. The SDK finds nodes that have the file, pulls segments, and writes the assembled file to disk.
+
+```python
+from core.indexer import Indexer
+
+INDEXER_RPC = "https://indexer-storage-testnet-turbo.0g.ai"
+root_hash   = "0x11fdd3fd0a6e9594bf4ffe86a5cf095d85ac00f23b4f2e559802d624f6a86b58"
+
+indexer = Indexer(INDEXER_RPC)
+err = indexer.download(root_hash, "./output.txt", proof=False)
+
+if err is not None:
+    raise err
+print("Download complete")
+```
+
+Set `proof=True` to verify every segment against its merkle proof during download. This is slower but guarantees byte-exact integrity.
+
+<Note>
+  Files typically take 3–5 minutes to propagate across storage shards after upload. If you download immediately, the indexer may not have enough replicas to serve your request yet.
+</Note>
+
+## Complete example
+
+End-to-end upload and download:
+
+```python
+import os
+from eth_account import Account
+from core.indexer import Indexer
+from core.file import ZgFile
+
+PRIVATE_KEY    = os.environ["PRIVATE_KEY"]
+BLOCKCHAIN_RPC = "https://evmrpc-testnet.0g.ai"
+INDEXER_RPC    = "https://indexer-storage-testnet-turbo.0g.ai"
+
+indexer = Indexer(INDEXER_RPC)
+account = Account.from_key(PRIVATE_KEY)
+
+# --- Upload ---
+file = ZgFile.from_file_path("./data.txt")
+
+result, err = indexer.upload(
+    file,
+    BLOCKCHAIN_RPC,
+    account,
+    {
+        "tags": b"\x00",
+        "finalityRequired": True,
+        "expectedReplica": 1,
+        "account": account,
+    },
+)
+file.close()
+
+if err:
+    raise err
+
+root_hash = result["rootHash"]
+print(f"Uploaded: {root_hash}")
+print(f"Tx:       {result['txHash']}")
+
+# --- Download (wait 3–5 minutes for propagation) ---
+err = indexer.download(root_hash, "./output.txt")
+if err:
+    raise err
+print("Downloaded ./output.txt")
+```
+
+## Upload from bytes
+
+For in-memory data, use `ZgFile.from_bytes`:
+
+```python
+data = b"hello, 0G Storage!"
+file = ZgFile.from_bytes(data)
+
+result, err = indexer.upload(file, BLOCKCHAIN_RPC, account, {
+    "tags": b"\x00",
+    "finalityRequired": True,
+    "account": account,
+})
+
+print(result["rootHash"])
+# No file.close() needed — in-memory ZgFile has no file descriptor
+```
+
+## Check if a file already exists
+
+Before uploading, you can skip the transaction if a file with the same root hash is already on the network. Compute the merkle root first, then query the storage nodes:
+
+```python
+file = ZgFile.from_file_path("./data.txt")
+tree, err = file.merkle_tree()
+if err:
+    raise err
+print(f"Would upload: {tree.root_hash()}")
+
+# Then pass skipTx=True in upload_opts to reuse the existing submission
+```
+
+See [Merkle Trees & Proofs](/storage/merkle-trees) for computing root hashes directly without uploading.
+
+## Storage fees
+
+Uploads cost a small on-chain fee paid to the Flow contract in 0G tokens. The SDK calculates the fee automatically by querying the market contract for the current `pricePerSector` and multiplying by the number of sectors in your file.
+
+- Override the fee by setting `"fee": <wei_amount>` in `upload_opts`
+- The SDK prints the calculated fee to stdout before submission
+- Fees are small — typically a fraction of an OG token for files up to a few megabytes
+
+## Handling errors
+
+Upload and download return `(result, err)` tuples instead of raising. Always check `err` first:
+
+```python
+result, err = indexer.upload(file, BLOCKCHAIN_RPC, account, upload_opts)
+
+if err is not None:
+    # err is an Exception instance — inspect or re-raise
+    print(f"Upload failed: {err}")
+```
+
+For retryable errors (transient network issues, "too many data writing" from busy nodes), pass `retry_opts` to `indexer.upload()`. See [Error Handling](/storage/error-handling) for the full exception hierarchy.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Upload succeeds but download returns 'file not found'">
+    Files take 3–5 minutes to propagate across storage shards. Wait, then retry. You can query individual storage nodes with `indexer.get_file_locations(root_hash)` to see which nodes have your file.
+  </Accordion>
+  <Accordion title="'Some direct uploads failed, but file may still propagate via network'">
+    This is a non-fatal warning. The SDK submitted the file to the Flow contract and some direct segment uploads failed, but other nodes will propagate the data via gossip. The upload is considered successful once the transaction is confirmed.
+  </Accordion>
+  <Accordion title="Insufficient balance for storage fee">
+    Top up your wallet with more 0G tokens. For testnet, use [faucet.0g.ai](https://faucet.0g.ai). For a rough estimate, 1 OG covers a few hundred kilobytes of storage.
+  </Accordion>
+  <Accordion title="'Account required for transaction'">
+    The `upload_opts` dict must include the `"account"` key — the signer used to submit the Flow contract transaction. This is in addition to the `signer` positional argument.
+  </Accordion>
+  <Accordion title="File upload hangs for several minutes">
+    Large files (hundreds of MB+) take time. For files over 4 GB, use `Uploader.splitable_upload()` — see [Large Files](/storage/large-files).
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Merkle trees & proofs" icon="diagram-project" href="/storage/merkle-trees">
+    Compute root hashes, generate proofs, validate file integrity.
+  </Card>
+  <Card title="Large files" icon="file-lines" href="/storage/large-files">
+    Splitable uploads and fragment downloads for multi-gigabyte files.
+  </Card>
+  <Card title="KV storage" icon="database" href="/storage/kv-storage">
+    Read and write key-value streams with access control.
+  </Card>
+  <Card title="Error handling" icon="triangle-exclamation" href="/storage/error-handling">
+    Exception hierarchy, retry logic, and error codes.
+  </Card>
+</CardGroup>
