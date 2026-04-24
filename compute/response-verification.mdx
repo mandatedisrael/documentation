@@ -1,8 +1,239 @@
 ---
 title: "Response Verification"
-description: "Verify TEE attestations and validate TEE-signed responses from providers."
+description: "Verify TEE attestations, validate signed inference responses, and download attestation reports from 0G Compute providers."
 ---
 
+0G Compute providers that advertise `verifiability == "TeeML"` run inside a Trusted Execution Environment (TEE) and sign every response they produce. The SDK gives you three tools to verify the integrity of a provider and its responses:
+
+- **`verify_service`** — comprehensive provider attestation check before you use it
+- **`process_response`** — validate a specific response's TEE signature
+- **Attestation download helpers** — fetch raw quotes and signatures for custom verification
+
+## The verifiability field
+
+```python
+service = broker.inference.get_service(provider_address)
+print(service.verifiability)       # "TeeML" or ""
+print(service.is_verifiable())     # True / False
+```
+
+- `"TeeML"` — provider runs in a TEE (SGX, TDX, DStack, or GPU attestation)
+- Empty string — unverifiable provider; responses are not cryptographically bound
+
+For non-verifiable services, `process_response` always returns `True` (nothing to validate).
+
+## Verify a provider end-to-end
+
+`verify_service` performs a full attestation check:
+
+```python
+result = broker.inference.verify_service(
+    provider_address = "0xProvider...",
+    output_dir       = "./reports",    # optional — save JSON report
+)
+
+print(f"Valid:           {result['is_valid']}")
+print(f"Model:           {result['model']}")
+print(f"Verifiability:   {result['verifiability']}")
+print(f"TEE signer:      {result['tee_signer']}")
+print(f"Signer match:    {result.get('signer_match')}")
+print(f"Attestation:     {result.get('attestation_verified')}")
+if result["report_path"]:
+    print(f"Report saved to: {result['report_path']}")
+```
+
+### What it does
+
+1. Fetches the provider's current service metadata from the Inference contract.
+2. Requests the TEE quote from `<provider_url>/v1/quote`.
+3. Extracts the TEE signer address from the attestation report, auto-detecting the format:
+   - **SGX / TDX** — standard `report_data` field (base64-decoded)
+   - **DStack** — compose-based verification via nested `evidence.quote.report_data`
+   - **GPU attestation** — `evidence.gpu_evidence`
+4. Optionally verifies the quote against the on-chain Automata contract (non-blocking — unavailable verification is logged, not fatal).
+5. Compares the extracted signer with the signer recorded on-chain (if you've acknowledged the provider).
+6. Writes a JSON report to `output_dir` if provided.
+
+### Result structure
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `is_valid` | `bool` | Overall validity — `True` when the quote is available and signers match (or the format is DStack/GPU with a valid attestation) |
+| `provider` | `str` | Provider address |
+| `service_type`, `model`, `verifiability`, `url` | `str` | From service metadata |
+| `tee_signer` | `str \| None` | Extracted from the quote |
+| `expected_signer` | `str \| None` | Signer recorded on-chain, if available |
+| `signer_match` | `bool` | True if extracted and expected signers match (or the format is DStack/GPU) |
+| `quote_available` | `bool` | Whether the `/v1/quote` request succeeded |
+| `quote_data` | `dict` | Raw quote response |
+| `attestation_verified` | `bool \| None` | Automata contract verification result (optional) |
+| `attestation_format` | `str \| None` | `"sgx_tdx"`, `"dstack"`, or `"gpu"` |
+| `errors` | `list[str]` | Non-fatal issues encountered during verification |
+| `timestamp` | `int` | Milliseconds since epoch |
+| `report_path` | `str \| None` | Path to the JSON report, if `output_dir` was set |
+
 <Note>
-This page is a stub. Content coming soon.
+  `verify_service` never raises on verification failure — it returns `is_valid=False` with errors populated. It only raises `ServiceNotFoundError` if the provider isn't registered at all.
 </Note>
+
+## Validate a single response
+
+After making an inference request, confirm the response was actually produced by the TEE:
+
+```python
+import json
+import requests
+
+metadata = broker.inference.get_service_metadata(provider_address)
+headers  = broker.inference.get_request_headers(provider_address)
+
+resp = requests.post(
+    f"{metadata['endpoint']}/chat/completions",
+    headers = {"Content-Type": "application/json", **headers},
+    json    = {
+        "model":    metadata["model"],
+        "messages": [{"role": "user", "content": "What is 2 + 2?"}],
+    },
+)
+
+data    = resp.json()
+content = data["choices"][0]["message"]["content"]
+chat_id = data["id"]
+
+is_valid = broker.inference.process_response(
+    provider_address = provider_address,
+    content          = content,
+    chat_id          = chat_id,
+)
+
+print(f"Response verified: {is_valid}")
+```
+
+### How it works
+
+`process_response` looks up the service's verifiability. For `"TeeML"` providers it:
+
+1. Fetches the TEE-generated signature for this specific `chat_id` from `<provider_url>/v1/proxy/signature/<chat_id>`
+2. Extracts the signer's public key from the service's `additional_info` (which may include a `TargetTeeAddress` override for separated architectures)
+3. Validates the ECDSA signature over the response content
+
+<Warning>
+  `chat_id` is required for verifiable services. Without it, `process_response` raises `InvalidResponseError`. For non-verifiable services, `chat_id` can be omitted — the method returns `True` regardless.
+</Warning>
+
+### When validation matters
+
+- **Compliance use cases** — prove to auditors that AI outputs came from a specific attested TEE
+- **Dispute resolution** — provide cryptographic evidence that a provider produced a given output
+- **Detection of middleboxes** — detect if a response was modified between the TEE and your app
+
+## Raw attestation artifacts
+
+For custom verification flows, bypass the high-level helpers and fetch the primitives directly.
+
+### Download the attestation quote
+
+```python
+broker.inference.download_quote_report(
+    provider_address = "0xProvider...",
+    output_path      = "./quote.json",
+)
+```
+
+Saves the provider's TEE quote as JSON. Includes `report_data`, `quote` (hex), and (for DStack) `compose_content` and `evidence`.
+
+### Attestation report download URL
+
+For distributing the verification link to a third-party system:
+
+```python
+url = broker.inference.get_signer_ra_download_link(provider_address)
+# http://provider.example.com/v1/proxy/attestation/report
+```
+
+### Per-chat signature URL
+
+```python
+url = broker.inference.get_chat_signature_download_link(provider_address, chat_id)
+# http://provider.example.com/v1/proxy/signature/chatcmpl-abc123
+```
+
+Third parties can fetch this URL and verify the signature against your expected TEE signer without involving the SDK.
+
+## Generate a verification report
+
+Archive verification output for compliance:
+
+```python
+from pathlib import Path
+
+Path("./audit-reports").mkdir(exist_ok=True)
+result = broker.inference.verify_service(
+    provider_address = provider_address,
+    output_dir       = "./audit-reports",
+)
+
+print(f"Report: {result['report_path']}")
+```
+
+The report is a JSON file named `verification_<provider>_<timestamp>.json` containing every field from the result dict.
+
+## Acknowledge first, then verify
+
+The `expected_signer` / `signer_match` check only works for providers you've **acknowledged** on-chain. Acknowledgement records the provider's TEE signer to your account:
+
+```python
+# First time per provider
+broker.inference.acknowledge_provider_signer(provider_address)
+
+# Now verify_service can compare extracted vs expected signer
+result = broker.inference.verify_service(provider_address)
+```
+
+### Check acknowledgement status
+
+```python
+if broker.inference.acknowledged(provider_address):
+    print("Already acknowledged")
+```
+
+### Revoke acknowledgement
+
+If you want to stop trusting a provider's TEE signer (e.g. after suspicious behaviour):
+
+```python
+broker.inference.revoke_provider_tee_signer_acknowledgement(provider_address)
+```
+
+You must re-acknowledge before the SDK will generate request headers for that provider again.
+
+## API at a glance
+
+### Verification
+
+| Method | Returns |
+|--------|---------|
+| `broker.inference.verify_service(provider, output_dir=None)` | result dict |
+| `broker.inference.process_response(provider, content, chat_id=None)` | `bool` |
+| `broker.inference.acknowledged(provider)` | `bool` |
+| `broker.inference.acknowledge_provider_signer(provider)` | receipt dict |
+| `broker.inference.revoke_provider_tee_signer_acknowledgement(provider)` | receipt dict |
+
+### Attestation artifacts
+
+| Method | Returns |
+|--------|---------|
+| `broker.inference.download_quote_report(provider, output_path)` | `None` — writes JSON |
+| `broker.inference.get_signer_ra_download_link(provider)` | `str` — URL |
+| `broker.inference.get_chat_signature_download_link(provider, chat_id)` | `str` — URL |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Inference" icon="bolt" href="/compute/inference">
+    Make requests to verified providers.
+  </Card>
+  <Card title="Fine-tuning" icon="sliders" href="/compute/fine-tuning">
+    Fine-tuning providers use the same TEE attestation flow.
+  </Card>
+</CardGroup>
