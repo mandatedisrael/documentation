@@ -1,68 +1,96 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "0G Python SDK",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#5B21B6"
   },
   "favicon": "/favicon.svg",
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "0G Compute",
         "groups": [
           {
             "group": "Getting started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "compute/introduction",
+              "compute/installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Guides",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "compute/inference",
+              "compute/account-management",
+              "compute/service-discovery",
+              "compute/api-keys-session-tokens",
+              "compute/response-verification",
+              "compute/fine-tuning",
+              "compute/openai-sdk"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "0G Storage",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Getting started",
+            "pages": [
+              "storage/introduction",
+              "storage/installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "storage/storage-sdk",
+              "storage/merkle-trees",
+              "storage/kv-storage",
+              "storage/large-files",
+              "storage/error-handling"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
             "pages": [
               "api-reference/introduction"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "0G Compute",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api-reference/compute/broker",
+              "api-reference/compute/ledger-manager",
+              "api-reference/compute/inference-manager",
+              "api-reference/compute/session-manager",
+              "api-reference/compute/fine-tuning-broker",
+              "api-reference/compute/lora-processor",
+              "api-reference/compute/read-only-broker",
+              "api-reference/compute/models",
+              "api-reference/compute/exceptions"
+            ]
+          },
+          {
+            "group": "0G Storage",
+            "pages": [
+              "api-reference/storage/indexer",
+              "api-reference/storage/zg-file",
+              "api-reference/storage/merkle-tree",
+              "api-reference/storage/uploader",
+              "api-reference/storage/downloader",
+              "api-reference/storage/storage-node",
+              "api-reference/storage/storage-kv",
+              "api-reference/storage/kv-client",
+              "api-reference/storage/exceptions"
             ]
           }
         ]
@@ -71,14 +99,19 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
+          "anchor": "0G Labs Docs",
+          "href": "https://docs.0g.ai",
           "icon": "book-open-cover"
         },
         {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
+          "anchor": "GitHub",
+          "href": "https://github.com/mandatedisrael/0g-py-sdk",
+          "icon": "github"
+        },
+        {
+          "anchor": "Faucet",
+          "href": "https://faucet.0g.ai",
+          "icon": "faucet"
         }
       ]
     }
@@ -90,33 +123,32 @@
   "navbar": {
     "links": [
       {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
+        "label": "0G Labs",
+        "href": "https://0g.ai"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
+      "label": "GitHub",
+      "href": "https://github.com/mandatedisrael/0g-py-sdk"
     }
   },
   "contextual": {
     "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
+      "copy",
+      "view",
+      "chatgpt",
+      "claude",
+      "perplexity",
+      "mcp",
+      "cursor",
+      "vscode"
+    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "x": "https://x.com/0g_labs",
+      "github": "https://github.com/0glabs"
     }
   }
 }
