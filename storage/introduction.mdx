@@ -1,8 +1,74 @@
 ---
 title: "Introduction"
-description: "Overview of the 0G Storage Python SDK — decentralized storage with merkle proofs and sharded nodes."
+description: "Python SDK for the 0G Storage Network — decentralized, sharded storage with cryptographic merkle proofs."
 ---
 
+The **0G Storage Python SDK** is the official Python interface to the [0G Storage Network](https://docs.0g.ai/developer-hub/building-on-0g/storage/overview), a decentralized storage layer that spreads files across a network of storage nodes and anchors their integrity with cryptographic merkle proofs on the 0G chain.
+
+Upload a file and you get back a root hash — a 32-byte fingerprint that anyone can use to download and verify the exact bytes you stored. Every chunk is routed to sharded storage nodes, and Flow contract submissions settle the on-chain record.
+
+## What you can do with the SDK
+
+- **Upload & download files** — with automatic shard routing, retry logic, and merkle verification
+- **Generate merkle trees** — produce cryptographic proofs of file integrity with byte-exact parity to the TypeScript SDK
+- **Store large files** — split uploads into 4 GB fragments, then download and reassemble
+- **Read & write KV data** — append-only key-value streams with per-key access control
+- **Inspect storage nodes** — low-level RPC access for segment uploads, downloads, and shard configs
+
+## Core primitives
+
+- **Files** — any byte stream, chunked into 256-byte leaves and organized into a merkle tree
+- **Merkle proofs** — Keccak256-based proofs that bind every byte to a single root hash
+- **Streams** — KV data stores identified by a `stream_id`, with read/write/admin access control
+- **Flow contract** — the on-chain submission registry that records file metadata and triggers storage node propagation
+
+## How it works
+
+<Steps>
+  <Step title="Build the merkle tree">
+    The SDK reads your file, splits it into 256-byte chunks, and computes a merkle tree. The root hash identifies the file globally.
+  </Step>
+  <Step title="Submit to the Flow contract">
+    The SDK sends a transaction to the Flow contract with the file's root hash, size, and tags. Storage nodes watch the contract and begin ingesting.
+  </Step>
+  <Step title="Upload segments to sharded nodes">
+    File segments are uploaded in parallel to the selected storage nodes, with automatic retry on transient failures.
+  </Step>
+  <Step title="Download with verification">
+    Any reader can download by root hash. The SDK pulls segments from nodes, reassembles the file, and (optionally) verifies each segment against a merkle proof.
+  </Step>
+</Steps>
+
+## Why 0G Storage
+
+- **Verifiable** — every file is anchored by a merkle root; no trust in individual nodes required
+- **Sharded** — files are spread across nodes by shard ID for capacity and redundancy
+- **Compatible** — byte-exact parity with the [TypeScript SDK](https://github.com/0glabs/0g-ts-sdk), so files uploaded with either SDK produce identical root hashes
+- **Large-file ready** — splitable uploads handle multi-gigabyte files natively
+- **Structured storage** — a full KV layer for indexed data, not just blobs
+
+## Storage vs. KV
+
+The SDK exposes two storage primitives through the same network:
+
+| Use case | Primitive | Key class |
+|----------|-----------|-----------|
+| Store a file or blob as a whole | File upload | `Indexer`, `ZgFile` |
+| Store discrete key → value pairs, read by key | KV streams | `KvClient`, `StreamDataBuilder` |
+
+Files are immutable once submitted; KV streams are append-only with version-aware reads.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Install the SDK" icon="download" href="/storage/installation">
+    Install `0g-storage-sdk` and configure network endpoints.
+  </Card>
+  <Card title="Upload & download" icon="file-arrow-up" href="/storage/storage-sdk">
+    Your first file upload and download, end-to-end.
+  </Card>
+</CardGroup>
+
 <Note>
-This page is a stub. Content coming soon.
+  For protocol-level details, see the official [0G Labs documentation](https://docs.0g.ai/developer-hub/building-on-0g/storage/overview).
 </Note>
