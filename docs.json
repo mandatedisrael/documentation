@@ -58,45 +58,6 @@
             ]
           }
         ]
-      },
-      {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "Overview",
-            "pages": [
-              "api-reference/introduction"
-            ]
-          },
-          {
-            "group": "0G Compute",
-            "pages": [
-              "api-reference/compute/broker",
-              "api-reference/compute/ledger-manager",
-              "api-reference/compute/inference-manager",
-              "api-reference/compute/session-manager",
-              "api-reference/compute/fine-tuning-broker",
-              "api-reference/compute/lora-processor",
-              "api-reference/compute/read-only-broker",
-              "api-reference/compute/models",
-              "api-reference/compute/exceptions"
-            ]
-          },
-          {
-            "group": "0G Storage",
-            "pages": [
-              "api-reference/storage/indexer",
-              "api-reference/storage/zg-file",
-              "api-reference/storage/merkle-tree",
-              "api-reference/storage/uploader",
-              "api-reference/storage/downloader",
-              "api-reference/storage/storage-node",
-              "api-reference/storage/storage-kv",
-              "api-reference/storage/kv-client",
-              "api-reference/storage/exceptions"
-            ]
-          }
-        ]
       }
     ],
     "global": {
