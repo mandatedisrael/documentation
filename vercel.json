@@ -1,0 +1,4 @@
+{
+  "buildCommand": "mint build",
+  "outputDirectory": ".mint/build"
+}
