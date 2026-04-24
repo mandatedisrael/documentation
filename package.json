@@ -1,0 +1,12 @@
+{
+  "name": "0g-python-sdk-docs",
+  "version": "1.0.0",
+  "description": "0G Python SDK Documentation",
+  "scripts": {
+    "dev": "mint dev",
+    "build": "mint build"
+  },
+  "devDependencies": {
+    "@mintlify/cli": "latest"
+  }
+}
