@@ -1,8 +1,211 @@
 ---
 title: "API Keys & Session Tokens"
-description: "Generate ephemeral session tokens for SDK usage or persistent API keys for server applications."
+description: "Authenticate requests to 0G Compute providers with ephemeral session tokens or long-lived, revocable API keys."
 ---
 
-<Note>
-This page is a stub. Content coming soon.
-</Note>
+Every request to a 0G Compute provider is authenticated with a signed token carried in the `Authorization` header. The SDK supports two token modes, both encoded as `app-sk-…` bearer credentials:
+
+- **Ephemeral session tokens** — auto-generated, 24-hour TTL, cached in-process. Ideal for SDK-driven apps.
+- **Persistent API keys** — generated once, can last indefinitely, individually revocable. Ideal for server applications.
+
+Both token types are cryptographically signed by your wallet and validated by the provider against the on-chain Inference contract.
+
+## How tokens work
+
+Each token embeds:
+
+- Your wallet address (`address`) and the target provider (`provider`)
+- A creation timestamp and optional expiration (`timestamp`, `expiresAt`)
+- A random nonce
+- A **generation** number — bumps on `revoke_all_tokens`, invalidating every prior token in one sweep
+- A **token ID** (0–254 for persistent, 255 for ephemeral) — used for individual revocation
+
+The token is JSON-encoded, keccak-hashed, signed with your wallet's private key, and base64-encoded alongside the signature. The provider's broker validates the signature, checks the generation matches your on-chain account, checks the token ID isn't in the `revokedBitmap`, and confirms your sub-account has balance — all locally.
+
+## Ephemeral session tokens
+
+This is the default mode. You already saw it in the [Inference](/compute/inference) flow:
+
+```python
+headers = broker.inference.get_request_headers(provider_address)
+# {'Authorization': 'Bearer app-sk-...'}
+```
+
+- **Token ID**: always 255
+- **TTL**: 24 hours (cannot exceed this; shorter values are allowed)
+- **Cache**: tokens are cached per `(user, provider)` pair; reused until there's less than 1 hour left
+- **Revocation**: can only be revoked collectively via `revoke_all_tokens`
+
+### Clear the cache
+
+If your wallet's nonce or provider acknowledgement changes mid-process, force a fresh token:
+
+```python
+broker.inference._session_manager.clear_session_cache(provider_address)
+# or clear everything
+broker.inference._session_manager.clear_session_cache()
+```
+
+You rarely need this — the cache auto-refreshes when a cached token is near expiry.
+
+## Persistent API keys
+
+Persistent keys use token IDs 0–254, so each provider can host up to 255 live keys simultaneously. Each one is individually revocable.
+
+### Quick path: `get_secret`
+
+`get_secret` returns the full `app-sk-…` token string, ready to paste into any HTTP client:
+
+```python
+secret = broker.inference.get_secret(provider_address)
+print(secret)
+# app-sk-eyJhZGRyZXNzIjoi...
+
+# Use it directly
+import requests
+headers = {"Authorization": f"Bearer {secret}"}
+```
+
+#### With expiration
+
+```python
+# Expires in 7 days (milliseconds)
+secret = broker.inference.get_secret(
+    provider_address,
+    expires_in = 7 * 24 * 60 * 60 * 1000,
+)
+```
+
+`expires_in=0` (or omitted) means the key never expires.
+
+#### With a specific token ID
+
+Pin the key to a particular ID so you can revoke it later by name:
+
+```python
+secret = broker.inference.get_secret(provider_address, token_id=5)
+```
+
+Token IDs must be 0–254. If omitted, the SDK picks the smallest available ID automatically.
+
+### Structured path: `create_api_key`
+
+Use `create_api_key` when you need the ID, timestamps, or the raw token for bookkeeping:
+
+```python
+from zerog_py_sdk import ApiKeyInfo
+
+info: ApiKeyInfo = broker.inference.create_api_key(
+    provider_address,
+    expires_in = 0,          # 0 = never
+    token_id   = None,        # auto-assign
+)
+
+print(f"ID:         {info.token_id}")
+print(f"Created:    {info.created_at}")
+print(f"Expires:    {info.expires_at}")
+print(f"Raw token:  {info.raw_token}")
+```
+
+## Revoke API keys
+
+### Revoke one key
+
+```python
+broker.inference.revoke_api_key(provider_address, token_id=5)
+```
+
+Sends an on-chain transaction that sets bit 5 in your account's `revokedBitmap`. All future requests carrying that token ID are rejected by the provider.
+
+<Warning>
+  Ephemeral tokens (ID 255) cannot be revoked individually. Attempting to do so raises `ValueError`.
+</Warning>
+
+### Revoke all keys
+
+```python
+broker.inference.revoke_all_tokens(provider_address)
+```
+
+Increments the generation counter on your account, invalidating every token (ephemeral and persistent) issued up to this point. The session-token cache is cleared automatically. Subsequent `get_request_headers` calls generate fresh tokens.
+
+Use this for:
+
+- Lost or compromised API keys
+- End-of-engagement cleanup
+- Rotating credentials on a schedule
+
+## When to use which
+
+| Scenario | Use |
+|----------|-----|
+| Short-lived CLI tool, notebook, script | Ephemeral (default `get_request_headers`) |
+| Server backend that runs for weeks | Persistent `get_secret` or `create_api_key` |
+| Shared key across multiple services | Persistent — with per-service token IDs |
+| Need to rotate regularly | Persistent + schedule `revoke_api_key` |
+| Panic recovery after compromise | `revoke_all_tokens` |
+
+## Use tokens with any HTTP client
+
+Both token types produce standard bearer tokens. Any HTTP client works:
+
+```python
+import requests
+
+secret = broker.inference.get_secret(provider_address)
+metadata = broker.inference.get_service_metadata(provider_address)
+
+response = requests.post(
+    f"{metadata['endpoint']}/chat/completions",
+    headers={
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {secret}",
+    },
+    json={
+        "model":    metadata["model"],
+        "messages": [{"role": "user", "content": "Hello"}],
+    },
+)
+```
+
+See [Using with OpenAI SDK](/compute/openai-sdk) for a drop-in integration with the official OpenAI Python SDK.
+
+## API at a glance
+
+### Ephemeral
+
+| Method | Returns |
+|--------|---------|
+| `broker.inference.get_request_headers(provider, content="", use_legacy=False)` | `{'Authorization': 'Bearer app-sk-...'}` |
+
+### Persistent
+
+| Method | Returns |
+|--------|---------|
+| `broker.inference.get_secret(provider, token_id=None, expires_in=None)` | `str` — raw `app-sk-…` token |
+| `broker.inference.create_api_key(provider, expires_in=None, token_id=None)` | `ApiKeyInfo(token_id, created_at, expires_at, raw_token)` |
+
+### Revocation
+
+| Method | Returns |
+|--------|---------|
+| `broker.inference.revoke_api_key(provider, token_id)` | receipt dict |
+| `broker.inference.revoke_all_tokens(provider)` | receipt dict |
+
+### Constants
+
+| Name | Value | Meaning |
+|------|-------|---------|
+| `EPHEMERAL_TOKEN_ID` | `255` | Reserved ID for ephemeral tokens |
+| `EPHEMERAL_TOKEN_MAX_DURATION` | `24 * 60 * 60 * 1000` | 24 hours in milliseconds |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Response verification" icon="shield-check" href="/compute/response-verification">
+    Validate TEE-signed responses after making a request.
+  </Card>
+  <Card title="Using with OpenAI SDK" icon="code" href="/compute/openai-sdk">
+    Drop persistent API keys into the OpenAI Python SDK.
+  </Card>
+</CardGroup>
