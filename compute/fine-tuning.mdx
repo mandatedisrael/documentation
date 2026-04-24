@@ -1,8 +1,462 @@
 ---
 title: "Fine-tuning"
-description: "Upload datasets, create fine-tuning tasks, and deploy LoRA adapters to inference providers."
+description: "Train custom LoRA adapters on 0G Compute: upload datasets, submit training tasks, deploy adapters to inference GPUs, and chat with fine-tuned models."
 ---
 
+The 0G Compute Network supports **fine-tuning as a service**. You upload a dataset to a provider's TEE, submit a training task, wait for it to finish, and deploy the resulting LoRA adapter onto an inference provider's GPU. From that point, you can chat with the fine-tuned model just like any other provider.
+
+Everything runs inside attested TEEs — your dataset is encrypted in transit, the trained weights are signed, and the adapter is bound cryptographically to your task.
+
 <Note>
-This page is a stub. Content coming soon.
+  Fine-tuning is exposed through `broker.fine_tuning` alongside the regular `broker.ledger` and `broker.inference` managers. Create a normal broker — no extra setup required.
 </Note>
+
+## The fine-tuning workflow
+
+<Steps>
+  <Step title="Fund the fine-tuning provider">
+    Acknowledge the provider and transfer funds to its `fine-tuning` sub-account.
+  </Step>
+  <Step title="Upload your dataset to the TEE">
+    The provider stores the dataset encrypted inside its enclave.
+  </Step>
+  <Step title="Create a training task">
+    Submit the dataset hash, base model, and training parameters on-chain.
+  </Step>
+  <Step title="Monitor progress">
+    Poll until the task reaches `Trained` or `Delivered` state.
+  </Step>
+  <Step title="Acknowledge the delivered model">
+    Download the LoRA weights, verify the hash, acknowledge on-chain.
+  </Step>
+  <Step title="Deploy the adapter to an inference GPU">
+    Load the LoRA onto an inference provider so it serves completions.
+  </Step>
+  <Step title="Chat with the fine-tuned model">
+    Use the returned adapter name as the `model` field in chat requests.
+  </Step>
+</Steps>
+
+## Discover fine-tuning providers
+
+```python
+services = broker.fine_tuning.list_service()
+
+for s in services:
+    print(f"Provider: {s.provider}")
+    print(f"  URL:    {s.url}")
+    print(f"  Models: {s.models}")
+    print(f"  Price:  {s.price_per_token} wei per token")
+    print(f"  Quota:  {s.quota.gpu_count} × {s.quota.gpu_type}")
+```
+
+Each `FineTuningService` carries a `Quota` describing the provider's hardware (CPU count, memory, GPU count, GPU type, storage).
+
+List the base models a provider supports:
+
+```python
+models = broker.fine_tuning.list_model()
+```
+
+## Set up the account
+
+Fund the provider's fine-tuning sub-account exactly like inference — just with `service_type="fine-tuning"`:
+
+```python
+from zerog_py_sdk.utils import og_to_wei
+
+PROVIDER = "0xFineTuningProvider..."
+
+# Create or top up the main ledger
+try:
+    broker.ledger.get_ledger()
+except Exception:
+    broker.ledger.add_ledger("3")
+
+# Transfer to the fine-tuning sub-account (recommended minimum 1 OG)
+broker.ledger.transfer_fund(PROVIDER, "fine-tuning", og_to_wei("1"))
+
+# Acknowledge the provider's TEE signer
+broker.fine_tuning.acknowledge_provider_signer(PROVIDER)
+```
+
+Check account state at any time:
+
+```python
+account = broker.fine_tuning.get_account(PROVIDER)
+print(f"Balance: {account.balance / 10**18} OG")
+print(f"Acknowledged: {account.acknowledged}")
+print(f"Deliverables: {len(account.deliverables)}")
+```
+
+For detailed refund timing:
+
+```python
+detail = broker.fine_tuning.get_account_with_detail(PROVIDER)
+```
+
+## Upload a dataset
+
+Datasets go directly into the provider's TEE:
+
+```python
+result = broker.fine_tuning.upload_dataset_to_tee(
+    provider_address = PROVIDER,
+    dataset_path     = "./training_data.jsonl",
+)
+dataset_hash = result["datasetHash"]
+print(f"Dataset hash: {dataset_hash}")
+```
+
+Alternatively, for datasets you want to store on 0G Storage first:
+
+```python
+dataset_root = broker.fine_tuning.upload_dataset("./training_data.jsonl")
+```
+
+Dataset format typically follows the upstream model's expectations (JSONL with `prompt`/`completion` pairs, chat-format messages, etc.).
+
+## Estimate token cost
+
+Before training, estimate how many tokens your dataset will consume:
+
+```python
+tokens = broker.fine_tuning.calculate_token(
+    dataset_path           = "./training_data.jsonl",
+    pre_trained_model_name = "Qwen2.5-0.5B-Instruct",
+    use_python             = True,
+    provider_address       = PROVIDER,   # optional, for provider-specific tokenizers
+)
+print(f"Estimated: {tokens} tokens")
+```
+
+Multiply by the provider's `price_per_token` to get your expected cost.
+
+## Create a training task
+
+Submit the task with the dataset hash and a JSON training-params file:
+
+```python
+task_id = broker.fine_tuning.create_task(
+    provider_address       = PROVIDER,
+    pre_trained_model_name = "Qwen2.5-0.5B-Instruct",
+    dataset_hash           = dataset_hash,
+    training_path          = "./training_params.json",
+)
+print(f"Task: {task_id}")
+```
+
+`training_params.json` contents depend on the provider, but typically include:
+
+```json
+{
+    "learning_rate": 0.0002,
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 4,
+    "lora_rank": 8,
+    "lora_alpha": 16,
+    "lora_dropout": 0.1
+}
+```
+
+### Monitor progress
+
+```python
+import time
+
+while True:
+    task = broker.fine_tuning.get_task(PROVIDER, task_id)
+    print(f"Progress: {task.progress}")
+
+    if task.progress in ("Trained", "Delivered", "Completed", "Failed", "Cancelled"):
+        break
+
+    time.sleep(15)
+```
+
+Lifecycle: `Init` → `Training` → `Trained` → `Delivered` → `Completed`. `Failed` and `Cancelled` are terminal.
+
+### List and cancel tasks
+
+```python
+# All tasks with a provider
+tasks = broker.fine_tuning.list_task(PROVIDER)
+
+# Cancel if still training
+broker.fine_tuning.cancel_task(PROVIDER, task_id)
+```
+
+### Fetch training logs
+
+```python
+log = broker.fine_tuning.get_log(PROVIDER, task_id)
+print(log[-1000:])   # last 1000 chars
+```
+
+## Acknowledge the delivered model
+
+Once the task reaches `Delivered`, download the LoRA weights, verify the hash, and acknowledge on-chain. This unlocks the ability to deploy and chat with the adapter, and is required before you can start another task with the same provider.
+
+```python
+broker.fine_tuning.acknowledge_model(
+    provider_address = PROVIDER,
+    task_id          = task_id,
+    data_path        = "./lora_weights.bin",
+    download_method  = "tee",
+)
+```
+
+`download_method="tee"` fetches directly from the TEE (default). The method also:
+
+- Verifies the model hash matches the on-chain `model_root_hash` in the deliverable
+- Sends the `acknowledgeDeliverable` transaction
+- Raises `ContractError` if verification fails
+
+### Lower-level model operations
+
+```python
+# Download the LoRA weights only
+broker.fine_tuning.download_lora_from_tee(PROVIDER, task_id, "./lora.bin")
+
+# Decrypt an already-downloaded encrypted model
+broker.fine_tuning.decrypt_model(
+    provider_address       = PROVIDER,
+    task_id                = task_id,
+    encrypted_model_path   = "./encrypted.bin",
+    decrypted_model_path   = "./decrypted.bin",
+)
+
+# Generate usage instructions for a model
+broker.fine_tuning.model_usage(PROVIDER, "Qwen2.5-0.5B-Instruct", "./usage.md")
+```
+
+## Deploy the adapter to an inference GPU
+
+The fine-tuning provider trained your LoRA. To actually serve completions, you deploy it to an **inference** provider that supports the same base model. Often the same provider supports both roles.
+
+```python
+INFERENCE_PROVIDER = PROVIDER   # or a different inference-capable address
+
+deploy = broker.inference.lora.deploy_adapter(
+    provider_address = INFERENCE_PROVIDER,
+    base_model       = "Qwen2.5-0.5B-Instruct",
+    task_id          = task_id,
+    wait             = True,                # block until adapter is active
+    timeout_seconds  = 180,
+    on_progress      = lambda state: print(f"state: {state}"),
+)
+
+print(deploy.message)
+adapter_name = deploy.adapter_name   # use this as the model field in chat
+```
+
+### Lifecycle states
+
+`init → pending → downloading → ready → loading → active`. Terminal failure: `failed`. Recoverable: `offloaded`, `archived`.
+
+### Deploy by a known name
+
+If you already have an adapter name (e.g. persisted from a prior deploy):
+
+```python
+broker.inference.lora.deploy_adapter_by_name(
+    provider_address = INFERENCE_PROVIDER,
+    adapter_name     = "ft-Qwen2-5-0-5B-Instruct-0xabc123def4",
+    wait             = True,
+)
+```
+
+### List and inspect adapters
+
+```python
+adapters = broker.inference.lora.list_adapters(INFERENCE_PROVIDER)
+for a in adapters:
+    print(f"{a.adapter_name}: state={a.state}, task={a.task_id}")
+
+status = broker.inference.lora.get_adapter_status(INFERENCE_PROVIDER, adapter_name)
+print(status.state)
+```
+
+## Chat with the fine-tuned adapter
+
+The adapter name becomes the `model` field — everything else is standard chat:
+
+```python
+response = broker.inference.lora.chat(
+    provider_address = INFERENCE_PROVIDER,
+    adapter_name     = adapter_name,
+    message          = "Who are you?",
+    system_prompt    = "You are a helpful assistant.",
+)
+
+answer = response["choices"][0]["message"]["content"]
+print(answer)
+```
+
+The return value is a raw OpenAI-style chat-completion dict. For full control (multi-turn, max_tokens, etc.), send the request directly:
+
+```python
+import requests
+
+metadata = broker.inference.get_service_metadata(INFERENCE_PROVIDER)
+headers  = broker.inference.get_request_headers(INFERENCE_PROVIDER)
+
+resp = requests.post(
+    f"{metadata['endpoint']}/chat/completions",
+    headers = {"Content-Type": "application/json", **headers},
+    json    = {
+        "model":    adapter_name,     # use the LoRA adapter name here
+        "messages": [{"role": "user", "content": "Hello!"}],
+    },
+)
+```
+
+## Verify a fine-tuning provider
+
+Fine-tuning providers run in TEEs just like inference providers. Verify attestation before trusting them with sensitive datasets:
+
+```python
+result = broker.fine_tuning.verify_service(
+    provider_address = PROVIDER,
+    output_dir       = "./audit-reports",
+    on_log           = lambda msg: print(msg),
+)
+print(f"Valid: {result.get('is_valid')}")
+```
+
+## Full end-to-end example
+
+```python
+import os
+import time
+from zerog_py_sdk import create_broker
+from zerog_py_sdk.utils import og_to_wei
+
+PROVIDER   = "0xFineTuningProvider..."
+MODEL      = "Qwen2.5-0.5B-Instruct"
+DATASET    = "./training_data.jsonl"
+TRAINING   = "./training_params.json"
+
+broker = create_broker(
+    private_key = os.environ["PRIVATE_KEY"],
+    network     = "mainnet",
+)
+
+# 1. Account setup
+try:
+    broker.ledger.get_ledger()
+except Exception:
+    broker.ledger.add_ledger("3")
+
+broker.ledger.transfer_fund(PROVIDER, "fine-tuning", og_to_wei("1"))
+broker.fine_tuning.acknowledge_provider_signer(PROVIDER)
+
+# 2. Upload dataset
+upload = broker.fine_tuning.upload_dataset_to_tee(PROVIDER, DATASET)
+dataset_hash = upload["datasetHash"]
+
+# 3. Create task
+task_id = broker.fine_tuning.create_task(
+    provider_address       = PROVIDER,
+    pre_trained_model_name = MODEL,
+    dataset_hash           = dataset_hash,
+    training_path          = TRAINING,
+)
+
+# 4. Wait for training
+while True:
+    task = broker.fine_tuning.get_task(PROVIDER, task_id)
+    print(f"Progress: {task.progress}")
+    if task.progress in ("Delivered", "Failed", "Cancelled"):
+        break
+    time.sleep(15)
+
+# 5. Acknowledge delivery
+broker.fine_tuning.acknowledge_model(
+    provider_address = PROVIDER,
+    task_id          = task_id,
+    data_path        = f"./lora_{task_id}.bin",
+)
+
+# 6. Deploy LoRA adapter (same provider serves inference)
+deploy = broker.inference.lora.deploy_adapter(
+    provider_address = PROVIDER,
+    base_model       = MODEL,
+    task_id          = task_id,
+    wait             = True,
+    timeout_seconds  = 180,
+)
+adapter_name = deploy.adapter_name
+
+# 7. Chat
+response = broker.inference.lora.chat(PROVIDER, adapter_name, "Who are you?")
+print(response["choices"][0]["message"]["content"])
+```
+
+## API at a glance
+
+### Service discovery
+
+| Method | Returns |
+|--------|---------|
+| `broker.fine_tuning.list_service(include_unacknowledged=False)` | `list[FineTuningService]` |
+| `broker.fine_tuning.list_model()` | `(list[tuple], list[tuple])` |
+
+### Account
+
+| Method | Returns |
+|--------|---------|
+| `broker.fine_tuning.get_account(provider)` | `FineTuningAccountDetails` |
+| `broker.fine_tuning.get_account_with_detail(provider)` | `FineTuningAccountDetail` |
+| `broker.fine_tuning.get_locked_time()` | `int` (seconds) |
+| `broker.fine_tuning.acknowledge_provider_signer(provider)` | receipt dict |
+| `broker.fine_tuning.revoke_tee_signer_acknowledgement(provider)` | receipt dict |
+
+### Tasks
+
+| Method | Returns |
+|--------|---------|
+| `create_task(provider, pre_trained_model_name, dataset_hash, training_path)` | `str` (task id) |
+| `list_task(provider)` | `list[Task]` |
+| `get_task(provider, task_id=None)` | `Task` |
+| `cancel_task(provider, task_id)` | `str` |
+| `get_log(provider, task_id=None)` | `str` |
+
+### Datasets
+
+| Method | Returns |
+|--------|---------|
+| `upload_dataset_to_tee(provider, dataset_path)` | `dict` — includes `datasetHash` |
+| `upload_dataset(data_path, gas_price=None, max_gas_price=None)` | `str` (root hash) |
+| `download_dataset(data_path, data_root)` | `None` |
+| `calculate_token(dataset_path, pre_trained_model_name, use_python=True, provider_address=None)` | `int` |
+
+### Models & deliverables
+
+| Method | Returns |
+|--------|---------|
+| `acknowledge_model(provider, task_id, data_path, download_method="tee")` | receipt dict |
+| `download_lora_from_tee(provider, task_id, output_path)` | `None` |
+| `decrypt_model(provider, task_id, encrypted_model_path, decrypted_model_path)` | `None` |
+| `model_usage(provider, model_name, output_path)` | `None` |
+
+### LoRA deployment & chat
+
+| Method | Returns |
+|--------|---------|
+| `broker.inference.lora.deploy_adapter(provider, base_model, task_id, wait=False, timeout_seconds=120, on_progress=None)` | `DeployResponse` |
+| `broker.inference.lora.deploy_adapter_by_name(provider, adapter_name, ...)` | `DeployResponse` |
+| `broker.inference.lora.list_adapters(provider)` | `list[AdapterInfo]` |
+| `broker.inference.lora.get_adapter_status(provider, adapter_name)` | `AdapterStatusResponse` |
+| `broker.inference.lora.chat(provider, adapter_name, message, system_prompt=...)` | `dict` — OpenAI chat response |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Inference" icon="bolt" href="/compute/inference">
+    Make standard inference requests against base models.
+  </Card>
+  <Card title="Response verification" icon="shield-check" href="/compute/response-verification">
+    Verify TEE attestations for fine-tuning providers before upload.
+  </Card>
+</CardGroup>
