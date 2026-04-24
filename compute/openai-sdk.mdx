@@ -1,8 +1,261 @@
 ---
 title: "Using with OpenAI SDK"
-description: "Use 0G Compute providers as a drop-in backend for the OpenAI Python SDK."
+description: "Point the official OpenAI Python SDK at a 0G Compute provider — chat completions, streaming, and the Responses API, all with on-chain billing."
 ---
 
+0G Compute providers expose an **OpenAI-compatible** `/chat/completions` endpoint. That means you can point the official [OpenAI Python SDK](https://github.com/openai/openai-python) at any 0G provider and use features you're already familiar with — streaming, tool calls, structured output — with billing handled by the 0G ledger instead of an OpenAI account.
+
+## How it works
+
+The OpenAI SDK sends a POST to `{base_url}/chat/completions` with an `Authorization: Bearer <key>` header. 0G providers accept exactly that shape. You supply:
+
+- `base_url` — from `broker.inference.get_service_metadata(provider)["endpoint"]`
+- `api_key` — an `app-sk-…` token from `broker.inference.get_secret(provider)`
+- `model` — from the same service metadata
+
+Under the hood, the provider's TEE broker validates the bearer token against your on-chain ledger account, forwards the request to the model, and settles billing asynchronously on-chain. Your application code looks like standard OpenAI usage.
+
+## Install the OpenAI SDK
+
+```bash
+pip install openai
+```
+
+## Basic usage
+
+```python
+import os
+from openai import OpenAI
+from zerog_py_sdk import create_broker
+
+# 1. Fund your account and pick a provider (see the Inference guide)
+broker   = create_broker(private_key=os.environ["PRIVATE_KEY"], network="mainnet")
+provider = "0xProvider..."
+
+# 2. Get a persistent API key — the OpenAI SDK reuses it across calls
+secret   = broker.inference.get_secret(provider)
+metadata = broker.inference.get_service_metadata(provider)
+
+# 3. Create a standard OpenAI client
+client = OpenAI(
+    base_url = metadata["endpoint"],
+    api_key  = secret,
+)
+
+# 4. Use it like you would with OpenAI
+response = client.chat.completions.create(
+    model    = metadata["model"],
+    messages = [{"role": "user", "content": "Say hello in one word."}],
+)
+
+print(response.choices[0].message.content)
+```
+
 <Note>
-This page is a stub. Content coming soon.
+  `get_secret()` returns a persistent token (never expires by default). For short-lived scripts you can swap it out for ephemeral headers — see [Ephemeral tokens](#ephemeral-tokens-via-default_headers) below.
 </Note>
+
+## Streaming
+
+Just pass `stream=True` like any OpenAI call:
+
+```python
+stream = client.chat.completions.create(
+    model    = metadata["model"],
+    messages = [{"role": "user", "content": "Write a haiku about AI."}],
+    stream   = True,
+)
+
+for chunk in stream:
+    delta = chunk.choices[0].delta.content
+    if delta:
+        print(delta, end="", flush=True)
+print()
+```
+
+## Tool / function calling
+
+Provider support for tools depends on the underlying model. If the model is OpenAI-compatible with tool calling (e.g. recent Qwen, Llama, GPT-compatible models), it works identically:
+
+```python
+tools = [{
+    "type": "function",
+    "function": {
+        "name":        "get_weather",
+        "description": "Get current weather for a city",
+        "parameters": {
+            "type":       "object",
+            "properties": {"city": {"type": "string"}},
+            "required":   ["city"],
+        },
+    },
+}]
+
+response = client.chat.completions.create(
+    model    = metadata["model"],
+    messages = [{"role": "user", "content": "What's the weather in Paris?"}],
+    tools    = tools,
+)
+
+tool_calls = response.choices[0].message.tool_calls
+if tool_calls:
+    for call in tool_calls:
+        print(f"Call: {call.function.name}({call.function.arguments})")
+```
+
+If the chosen provider's model doesn't support tools, it simply returns a text response.
+
+## Multi-turn conversations
+
+```python
+messages = [
+    {"role": "system",    "content": "You are a helpful assistant."},
+    {"role": "user",      "content": "What's the capital of France?"},
+]
+
+response = client.chat.completions.create(model=metadata["model"], messages=messages)
+messages.append(response.choices[0].message.to_dict())
+
+messages.append({"role": "user", "content": "And its population?"})
+response = client.chat.completions.create(model=metadata["model"], messages=messages)
+print(response.choices[0].message.content)
+```
+
+## Ephemeral tokens via `default_headers`
+
+If you don't want to create a persistent API key, use ephemeral session headers via the client's `default_headers`:
+
+```python
+headers = broker.inference.get_request_headers(provider)   # {'Authorization': 'Bearer app-sk-...'}
+
+client = OpenAI(
+    base_url        = metadata["endpoint"],
+    api_key         = "not-used",   # OpenAI requires a non-empty api_key, even if unused
+    default_headers = headers,
+)
+```
+
+The ephemeral token is cached in the broker for 24 hours. If your process runs longer, refresh:
+
+```python
+client.default_headers.update(broker.inference.get_request_headers(provider))
+```
+
+## Async client
+
+The async version of the OpenAI SDK works identically:
+
+```python
+import asyncio
+from openai import AsyncOpenAI
+
+async def main():
+    client = AsyncOpenAI(base_url=metadata["endpoint"], api_key=secret)
+
+    response = await client.chat.completions.create(
+        model    = metadata["model"],
+        messages = [{"role": "user", "content": "Hello"}],
+    )
+    print(response.choices[0].message.content)
+
+asyncio.run(main())
+```
+
+## With a fine-tuned adapter
+
+If you've deployed a LoRA adapter via the [fine-tuning](/compute/fine-tuning) flow, pass the adapter name as the `model`:
+
+```python
+adapter_name = "ft-Qwen2-5-0-5B-Instruct-0xabc123def4"
+
+response = client.chat.completions.create(
+    model    = adapter_name,           # instead of metadata["model"]
+    messages = [{"role": "user", "content": "Who are you?"}],
+)
+```
+
+## What's not supported
+
+A few OpenAI features are specific to OpenAI's infrastructure and won't work against 0G providers:
+
+- **File upload / Assistants API** — these live on OpenAI's side
+- **Embeddings** — unless the provider advertises an embedding service type
+- **Moderation** — provider-specific
+- **Billing / usage endpoints** — replaced by `broker.ledger.get_ledger()` on 0G
+
+For billing, use the 0G equivalent:
+
+```python
+account = broker.ledger.get_ledger()
+print(f"Balance: {account.balance / 10**18} OG")
+```
+
+## Full example
+
+```python
+import os
+from openai import OpenAI
+from zerog_py_sdk import create_broker
+from zerog_py_sdk.utils import og_to_wei
+
+broker = create_broker(private_key=os.environ["PRIVATE_KEY"], network="mainnet")
+
+# Pick the first chatbot provider
+provider = next(
+    s.provider for s in broker.inference.list_service()
+    if s.service_type == "chatbot"
+)
+
+# Fund it if you haven't already
+try:
+    broker.ledger.get_ledger()
+except Exception:
+    broker.ledger.add_ledger("3")
+
+broker.inference.acknowledge_provider_signer(provider)
+broker.ledger.transfer_fund(provider, "inference", og_to_wei("1"))
+
+# Wire up OpenAI SDK
+metadata = broker.inference.get_service_metadata(provider)
+secret   = broker.inference.get_secret(provider)
+
+client = OpenAI(base_url=metadata["endpoint"], api_key=secret)
+
+response = client.chat.completions.create(
+    model    = metadata["model"],
+    messages = [
+        {"role": "system", "content": "You are a terse assistant."},
+        {"role": "user",   "content": "What is 2 + 2?"},
+    ],
+)
+
+print(response.choices[0].message.content)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="401 Unauthorized">
+    The `api_key` is likely an expired ephemeral token, a revoked persistent key, or a key from a different wallet. Regenerate with `broker.inference.get_secret(provider)`.
+  </Accordion>
+  <Accordion title="403 Forbidden">
+    The `base_url` is missing the `/v1/proxy` path. Always use `broker.inference.get_service_metadata(provider)["endpoint"]` — it appends the path automatically.
+  </Accordion>
+  <Accordion title="Model returns empty response or errors on tool calls">
+    Not every provider supports every OpenAI feature. Check the model's capabilities or try a different provider. The chat-completion shape is universal; advanced features vary.
+  </Accordion>
+  <Accordion title="Rate limits / 429">
+    Individual providers set their own rate limits. Transfer more funds to the provider sub-account or spread load across providers.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Inference" icon="bolt" href="/compute/inference">
+    The end-to-end flow without the OpenAI SDK.
+  </Card>
+  <Card title="API keys & session tokens" icon="key" href="/compute/api-keys-session-tokens">
+    Ephemeral vs persistent tokens and revocation.
+  </Card>
+</CardGroup>
