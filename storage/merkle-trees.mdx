@@ -1,8 +1,251 @@
 ---
 title: "Merkle Trees & Proofs"
-description: "Generate merkle trees, compute root hashes, and validate proofs for file integrity."
+description: "Generate merkle trees, compute root hashes, and validate cryptographic proofs for file integrity on 0G Storage."
 ---
 
+Every file on 0G Storage is identified by its **merkle root hash** — a 32-byte fingerprint that binds every byte in the file to a single on-chain commitment. This page covers how to build merkle trees, generate proofs for individual data segments, and validate them against a root hash.
+
+The Python SDK produces merkle roots that are **byte-exact identical** to the [TypeScript SDK](https://github.com/0glabs/0g-ts-sdk) — files uploaded with either SDK are interchangeable.
+
+## How 0G merkle trees work
+
+- Every file is split into fixed-size **chunks** of 256 bytes
+- 1024 chunks form a **segment** (256 KB)
+- Each chunk is hashed with Keccak256, then paired and hashed recursively until a single root remains
+- The root is the file's canonical identifier on the network
+
+## Compute a root hash from a file
+
+The simplest path is through `ZgFile`, which handles chunking, padding, and tree construction:
+
+```python
+from core.file import ZgFile
+
+file = ZgFile.from_file_path("./data.txt")
+tree, err = file.merkle_tree()
+
+if err is not None:
+    raise err
+
+print(f"Root hash: {tree.root_hash()}")
+print(f"Size:      {file.size()} bytes")
+print(f"Chunks:    {file.num_chunks()}")
+print(f"Segments:  {file.num_segments()}")
+
+file.close()
+```
+
+This performs no network calls — it's pure local hashing. The root hash is deterministic: the same input bytes always produce the same hash.
+
+## Compute a root hash from bytes
+
+For in-memory data:
+
+```python
+from core.file import ZgFile
+
+data = b"hello, 0G Storage!"
+file = ZgFile.from_bytes(data)
+tree, _ = file.merkle_tree()
+print(tree.root_hash())
+```
+
+## Build a merkle tree manually
+
+For lower-level control, use `MerkleTree` directly:
+
+```python
+from core.merkle import MerkleTree
+
+tree = MerkleTree()
+
+# Add leaves by hashing raw content
+tree.add_leaf(b"chunk 1 data")
+tree.add_leaf(b"chunk 2 data")
+tree.add_leaf(b"chunk 3 data")
+tree.add_leaf(b"chunk 4 data")
+
+# Or add leaves by precomputed hash (hex string with 0x prefix)
+# tree.add_leaf_by_hash("0xabc123...")
+
+# Build the tree — required before you can query the root or generate proofs
+result = tree.build()
+
+if result is None:
+    raise Exception("Tree build failed — empty leaves list?")
+
+print(f"Root: {tree.root_hash()}")
+print(f"Leaves: {len(tree.leaves)}")
+```
+
 <Note>
-This page is a stub. Content coming soon.
+  `tree.build()` returns the tree itself (or `None` if the leaves list is empty). Calling `root_hash()` before `build()` returns `None`.
 </Note>
+
+## Generate a proof for a segment
+
+A merkle proof lets anyone verify that a given chunk belongs to a file without needing the whole file — just the chunk, the root hash, and the proof.
+
+```python
+# Generate a proof for the leaf at index 2
+proof = tree.proof_at(2)
+
+print(f"Lemma length: {len(proof.lemma)}")   # sibling hashes + root
+print(f"Path length:  {len(proof.path)}")    # direction bits (True=left side)
+```
+
+`proof_at(i)` raises `IndexError` if `i` is out of range. For a single-leaf tree, the proof has a lemma of `[root]` and an empty path.
+
+## Validate a proof
+
+Given a proof, the target content bytes, the leaf position, and the total leaf count, validate that everything lines up:
+
+```python
+from core.merkle import ProofErrors
+
+content  = b"chunk 3 data"   # the actual bytes at position 2
+position = 2
+num_leaves = len(tree.leaves)
+
+error = proof.validate(
+    root_hash      = tree.root_hash(),
+    content        = content,
+    position       = position,
+    num_leaf_nodes = num_leaves,
+)
+
+if error is None:
+    print("Valid")
+else:
+    print(f"Invalid: {error.value}")
+```
+
+`validate()` returns `None` on success, or a `ProofErrors` enum value on failure.
+
+### Proof error types
+
+| Error | Meaning |
+|-------|---------|
+| `ProofErrors.WRONG_FORMAT` | Proof lemma/path lengths don't match |
+| `ProofErrors.CONTENT_MISMATCH` | Hashed content doesn't match the first lemma entry |
+| `ProofErrors.ROOT_MISMATCH` | Final lemma entry doesn't match the provided root hash |
+| `ProofErrors.POSITION_MISMATCH` | Proof path reconstructs to a different leaf position |
+| `ProofErrors.VALIDATION_FAILURE` | Intermediate hashes don't reconstruct the root |
+
+### Validate by hash
+
+If you already have a content hash (skipping the local hashing step), use `validate_hash`:
+
+```python
+from utils.crypto import keccak256_hash
+
+content_hash = keccak256_hash(content)
+error = proof.validate_hash(
+    root_hash      = tree.root_hash(),
+    content_hash   = content_hash,
+    position       = 2,
+    num_leaf_nodes = num_leaves,
+)
+```
+
+## Use a merkle root as a file identifier
+
+The root hash is what you use everywhere on 0G Storage:
+
+- **Upload**: the SDK submits it to the Flow contract as part of your transaction
+- **Download**: you pass it to `indexer.download(root_hash, path)` to retrieve the file
+- **Duplicate detection**: compute the root locally, then query `indexer.get_file_locations(root_hash)` to see if the file already exists on the network
+- **On-chain reference**: contracts can store root hashes to reference stored files
+
+## Create a Flow contract submission
+
+To submit a file to the chain manually (e.g. for batch uploads), use `create_submission`:
+
+```python
+file = ZgFile.from_file_path("./data.txt")
+submission, err = file.create_submission(
+    tags     = b"\x00",
+    submitter = "0xYOUR_WALLET_ADDRESS",
+)
+
+if err is not None:
+    raise err
+
+# submission is a dict with 'length', 'tags', 'nodes', 'data', 'submitter'
+# that you can pass to FlowContract.submit()
+print(f"Submission nodes: {len(submission['nodes'])}")
+```
+
+This is the same submission structure `indexer.upload()` builds internally — most users don't need to call it directly.
+
+## Verify parity with the TypeScript SDK
+
+A quick sanity check: the same input bytes should produce the same root hash in both SDKs.
+
+```python
+from core.file import ZgFile
+
+data = b"0G Storage parity check"
+tree, _ = ZgFile.from_bytes(data).merkle_tree()
+print(tree.root_hash())
+```
+
+Run the equivalent in TypeScript:
+
+```typescript
+import { ZgFile } from "@0glabs/0g-ts-sdk";
+const file = new ZgFile(Buffer.from("0G Storage parity check"));
+const [tree] = await file.merkleTree();
+console.log(tree.rootHash());
+```
+
+Both should print the same `0x…` hash. This property is tested in the SDK's test suite across multiple file sizes.
+
+## API at a glance
+
+### `ZgFile`
+
+| Method | Returns |
+|--------|---------|
+| `ZgFile.from_file_path(path)` | `ZgFile` |
+| `ZgFile.from_bytes(data, filename="data")` | `ZgFile` |
+| `file.merkle_tree()` | `(MerkleTree, Exception \| None)` |
+| `file.size()` | `int` (bytes) |
+| `file.num_chunks()` | `int` |
+| `file.num_segments()` | `int` |
+| `file.create_submission(tags, submitter)` | `(dict, Exception \| None)` |
+| `file.close()` | `None` |
+
+### `MerkleTree`
+
+| Method | Returns |
+|--------|---------|
+| `MerkleTree()` | empty tree |
+| `tree.add_leaf(content: bytes)` | `None` |
+| `tree.add_leaf_by_hash(hash_hex: str)` | `None` |
+| `tree.build()` | `MerkleTree \| None` |
+| `tree.root_hash()` | `str \| None` |
+| `tree.proof_at(i: int)` | `Proof` |
+
+### `Proof`
+
+| Method | Returns |
+|--------|---------|
+| `proof.validate(root_hash, content, position, num_leaf_nodes)` | `ProofErrors \| None` |
+| `proof.validate_hash(root_hash, content_hash, position, num_leaf_nodes)` | `ProofErrors \| None` |
+| `proof.validate_format()` | `ProofErrors \| None` |
+| `proof.validate_root()` | `bool` |
+| `proof.calculate_proof_position(num_leaf_nodes)` | `int` |
+| `proof.lemma` | `list[str]` — sibling hashes + root |
+| `proof.path` | `list[bool]` — direction bits (True = left-side) |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Upload & download" icon="file-arrow-up" href="/storage/storage-sdk">
+    Use root hashes to upload and retrieve files end-to-end.
+  </Card>
+  <Card title="Large files" icon="file-lines" href="/storage/large-files">
+    Split multi-GB files into fragments with independent root hashes.
+  </Card>
+</CardGroup>
