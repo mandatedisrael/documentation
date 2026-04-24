@@ -1,8 +1,309 @@
 ---
 title: "Inference"
-description: "Discover AI providers, fund your account, and make authenticated inference requests on 0G Compute."
+description: "Discover AI providers, fund a prepaid account, and make authenticated inference requests on the 0G Compute Network using Python."
 ---
 
+The 0G Compute Network exposes AI inference services — chat, image generation, speech-to-text — through a blockchain-based marketplace. The **0G Compute Python SDK** handles service discovery, account funding, request signing, and response verification so your application can call any provider with a few lines of Python.
+
+## Prerequisites
+
+- Python 3.8 or higher
+- The SDK installed: `pip install 0g-inference-sdk`
+- A wallet with 0G tokens ([get testnet tokens](https://faucet.0g.ai))
+- `requests` and `python-dotenv` installed
+
 <Note>
-This page is a stub. Content coming soon.
+  If you haven't set up the SDK yet, follow the [Installation](/compute/installation) guide first.
 </Note>
+
+## Supported service types
+
+| Service type | Description | Billing unit |
+|--------------|-------------|--------------|
+| `chatbot` | Conversational AI (LLMs) with OpenAI-compatible endpoints | Per token (input + output) |
+| `text-to-image` | Generate images from text prompts | Per image |
+| `image-editing` | Modify existing images | Per image |
+| `speech-to-text` | Transcribe audio to text | Per output token |
+
+Each service is registered on-chain with pricing, endpoint, model identifier, and verifiability type (typically `TeeML` for TEE-verified providers).
+
+## List available services
+
+Before making requests, discover what's live on the network:
+
+```python
+from zerog_py_sdk import create_broker
+
+broker = create_broker(private_key="0xYOUR_PRIVATE_KEY", network="testnet")
+
+services = broker.inference.list_service()
+for s in services:
+    print(f"{s.model:40s}  type={s.service_type}  provider={s.provider}")
+    print(f"    in={s.input_price} wei/token  out={s.output_price} wei/token")
+```
+
+Each entry is a `ServiceMetadata` with the fields:
+
+- `provider` — provider wallet address (unique identifier)
+- `service_type` — one of `chatbot`, `text-to-image`, `image-editing`, `speech-to-text`
+- `url` — provider endpoint base URL
+- `input_price`, `output_price` — prices in wei per unit
+- `model` — model identifier (e.g. `qwen/qwen-2.5-7b-instruct`)
+- `verifiability` — `TeeML` if TEE-verified, empty otherwise
+
+`list_service()` is paginated. Use `offset` and `limit` to page through large result sets, or pass `include_unacknowledged=False` to only see services whose TEE signer has been acknowledged on-chain.
+
+<Tip>
+  Want to browse without a wallet? Use `create_read_only_broker()` — see [Service Discovery](/compute/service-discovery).
+</Tip>
+
+## Make your first inference request
+
+The end-to-end flow is: fund your ledger, acknowledge the provider, transfer a sub-account balance, get auth headers, send the HTTP request.
+
+<Steps>
+  <Step title="Create a broker">
+    ```python
+    import os
+    from zerog_py_sdk import create_broker
+    from zerog_py_sdk.utils import og_to_wei
+
+    broker = create_broker(
+        private_key=os.environ["PRIVATE_KEY"],
+        network="testnet",
+    )
+    print(f"Address: {broker.get_address()}")
+    ```
+  </Step>
+
+  <Step title="Fund your ledger">
+    Create a prepaid ledger account with at least 3 OG (the contract minimum). This is a one-time setup — you can top up later with `deposit_fund`.
+
+    ```python
+    # First time: create ledger with 3 OG
+    broker.ledger.add_ledger("3")
+
+    # Later: add more funds to an existing ledger
+    broker.ledger.deposit_fund("1")
+
+    # Check your balance (values are in wei)
+    account = broker.ledger.get_ledger()
+    print(f"Available: {account.balance / 10**18} OG")
+    print(f"Locked:    {account.locked / 10**18} OG")
+    print(f"Total:     {account.total_balance / 10**18} OG")
+    ```
+
+    <Warning>
+      `add_ledger` enforces a minimum of 3 OG. Attempting a smaller deposit raises `ValueError`.
+    </Warning>
+  </Step>
+
+  <Step title="Pick a provider">
+    Filter the service list for the type you want and select a provider:
+
+    ```python
+    services = broker.inference.list_service()
+    chatbots = [s for s in services if s.service_type == "chatbot"]
+    provider_address = chatbots[0].provider
+    print(f"Using {chatbots[0].model} from {provider_address}")
+    ```
+  </Step>
+
+  <Step title="Acknowledge the provider">
+    A one-time on-chain action that records the provider's TEE signer to your account. Required before sending requests.
+
+    ```python
+    broker.inference.acknowledge_provider_signer(provider_address)
+    ```
+
+    This call is idempotent — if you've already acknowledged the provider, it returns immediately with `{"status": "already_acknowledged"}`.
+  </Step>
+
+  <Step title="Transfer funds to the provider sub-account">
+    Each provider has its own sub-account under your main ledger. Transfer a small balance so the provider will accept your requests. The broker recommends a minimum of 1 OG per provider.
+
+    ```python
+    broker.ledger.transfer_fund(
+        provider_address,
+        "inference",
+        og_to_wei("1"),   # amount in wei
+    )
+    ```
+
+    <Note>
+      Sub-account transfers are fast but settle on-chain. Budget a few seconds for confirmation.
+    </Note>
+  </Step>
+
+  <Step title="Generate authenticated headers">
+    The SDK creates a single-use session token, signs it with your wallet, and returns the HTTP headers the provider expects.
+
+    ```python
+    metadata = broker.inference.get_service_metadata(provider_address)
+    endpoint = metadata["endpoint"]   # already includes /v1/proxy
+    model    = metadata["model"]
+
+    headers = broker.inference.get_request_headers(provider_address)
+    # {"Authorization": "Bearer app-sk-..."}
+    ```
+
+    Session tokens are cached for 24 hours. You can also issue persistent API keys — see [API Keys & Session Tokens](/compute/api-keys-session-tokens).
+  </Step>
+
+  <Step title="Send the request">
+    Providers expose an OpenAI-compatible `/chat/completions` endpoint. Send a standard HTTP POST:
+
+    ```python
+    import requests
+
+    response = requests.post(
+        f"{endpoint}/chat/completions",
+        headers={"Content-Type": "application/json", **headers},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "What is 2 + 2?"}],
+            "max_tokens": 256,
+        },
+        timeout=60,
+    )
+
+    data   = response.json()
+    answer = data["choices"][0]["message"]["content"]
+    print(answer)
+    ```
+  </Step>
+</Steps>
+
+## Complete example
+
+```python
+import os
+import requests
+from zerog_py_sdk import create_broker
+from zerog_py_sdk.utils import og_to_wei
+
+# 1. Connect
+broker = create_broker(
+    private_key=os.environ["PRIVATE_KEY"],
+    network="testnet",
+)
+
+# 2. Fund (skip if ledger already funded)
+try:
+    broker.ledger.get_ledger()
+except Exception:
+    broker.ledger.add_ledger("3")
+
+# 3. Pick a chatbot provider
+services = broker.inference.list_service()
+provider = next(s.provider for s in services if s.service_type == "chatbot")
+
+# 4. Acknowledge + fund the provider
+broker.inference.acknowledge_provider_signer(provider)
+broker.ledger.transfer_fund(provider, "inference", og_to_wei("1"))
+
+# 5. Build + send the request
+metadata = broker.inference.get_service_metadata(provider)
+headers  = broker.inference.get_request_headers(provider)
+
+response = requests.post(
+    f"{metadata['endpoint']}/chat/completions",
+    headers={"Content-Type": "application/json", **headers},
+    json={
+        "model": metadata["model"],
+        "messages": [{"role": "user", "content": "Say hello in one word."}],
+    },
+    timeout=60,
+)
+
+data = response.json()
+print(data["choices"][0]["message"]["content"])
+```
+
+## Verify TEE-signed responses
+
+For providers with `verifiability == "TeeML"`, you can cryptographically verify that the response was produced inside a Trusted Execution Environment.
+
+```python
+chat_id = data["id"]   # chat completion ID from the response
+answer  = data["choices"][0]["message"]["content"]
+
+is_valid = broker.inference.process_response(
+    provider_address=provider,
+    content=answer,
+    chat_id=chat_id,
+)
+print(f"Response verified: {is_valid}")
+```
+
+For non-verifiable services (`verifiability == ""`), `process_response` always returns `True`. See [Response Verification](/compute/response-verification) for the full attestation flow, including `verify_service()` which checks the provider's TEE quote against the on-chain signer.
+
+## How billing works
+
+- **Prepaid ledger** — you deposit funds once; the SDK reads your balance on-chain.
+- **Provider sub-accounts** — each provider locks a portion of your ledger. You must transfer funds to a provider before making requests.
+- **Delayed settlement** — usage is deducted asynchronously after the request completes. Your sub-account balance may briefly show a higher value than you've actually spent.
+- **Refunds** — `broker.ledger.retrieve_fund("inference")` reclaims unused balances from all inference providers back to your main ledger.
+
+<Note>
+  Refunds are subject to the contract's lock time (typically 24 hours) to protect providers from immediate withdrawal after a request.
+</Note>
+
+## Auto-funding
+
+For long-running services, the SDK can top up a provider sub-account automatically when its balance falls below a threshold:
+
+```python
+from zerog_py_sdk import AutoFundingConfig
+
+broker.inference.start_auto_funding(
+    provider_address=provider,
+    config=AutoFundingConfig(interval_ms=30_000, buffer_multiplier=2),
+)
+
+# ...later
+broker.inference.stop_auto_funding(provider)
+```
+
+The background thread is a daemon — it exits with your process. See [Account Management](/compute/account-management#auto-funding) for details.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="403 Forbidden from provider">
+    The provider endpoint must include `/v1/proxy`. Always use `broker.inference.get_service_metadata(provider)["endpoint"]` — it adds the path automatically.
+  </Accordion>
+  <Accordion title="401 Unauthorized">
+    Your session token may have expired (24h TTL) or been revoked. Session tokens refresh automatically on the next `get_request_headers` call.
+  </Accordion>
+  <Accordion title="InsufficientBalanceError or 'account balance too low'">
+    Either your main ledger is empty or the provider sub-account hasn't been funded. Run:
+    ```python
+    broker.ledger.deposit_fund("1")
+    broker.ledger.transfer_fund(provider, "inference", og_to_wei("1"))
+    ```
+  </Accordion>
+  <Accordion title="ProviderNotAcknowledgedError">
+    Call `broker.inference.acknowledge_provider_signer(provider)` before sending requests. This is a one-time action per provider.
+  </Accordion>
+  <Accordion title="ServiceNotFoundError">
+    The provider address isn't registered on the current network. Check you're on the right network (testnet vs mainnet) and that the address appears in `list_service()`.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Account Management" icon="wallet" href="/compute/account-management">
+    Deep dive on deposits, transfers, refunds, and auto-funding.
+  </Card>
+  <Card title="API Keys & Session Tokens" icon="key" href="/compute/api-keys-session-tokens">
+    Issue persistent API keys for server applications.
+  </Card>
+  <Card title="Response Verification" icon="shield-check" href="/compute/response-verification">
+    Verify TEE attestations and signed responses on-chain.
+  </Card>
+  <Card title="Using with OpenAI SDK" icon="code" href="/compute/openai-sdk">
+    Point the official OpenAI Python SDK at a 0G provider.
+  </Card>
+</CardGroup>
