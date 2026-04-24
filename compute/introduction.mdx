@@ -1,8 +1,67 @@
 ---
 title: "Introduction"
-description: "Overview of the 0G Compute Network Python SDK — a decentralized marketplace for AI inference and fine-tuning."
+description: "Python SDK for the 0G Compute Network — decentralized AI inference, fine-tuning, and verifiable computing."
 ---
 
+The **0G Compute Python SDK** is the official Python interface to the [0G Compute Network](https://docs.0g.ai/developer-hub/building-on-0g/compute-network/overview), a decentralized GPU marketplace that provides AI inference services including Large Language Models (LLM), text-to-image generation, speech-to-text, and fine-tuning.
+
+Providers list AI services on-chain and users pay per request with 0G tokens. All billing, routing, and verification is handled by smart contracts — no accounts, no API keys, no vendor lock-in.
+
+## What you can do with the SDK
+
+- **Run AI inference** — chat with hosted LLMs, generate images, transcribe speech
+- **Fine-tune models** — upload datasets, train LoRA adapters, deploy to inference GPUs
+- **Verify computation** — validate TEE attestations and signed responses on-chain
+- **Manage funds** — deposit, transfer, and refund prepaid balances per provider
+- **Issue API keys** — create persistent, revocable tokens for server applications
+
+## Supported service types
+
+- **Chatbot services** — conversational AI with OpenAI-compatible endpoints
+- **Text-to-image** — generate images from text prompts
+- **Image editing** — modify existing images
+- **Speech-to-text** — transcribe audio to text
+- **Fine-tuning** — train custom LoRA adapters on your own datasets
+
+## How it works
+
+<Steps>
+  <Step title="Fund your account">
+    Deposit 0G tokens into the Ledger contract. Minimum 3 OG to create a ledger.
+  </Step>
+  <Step title="Discover providers">
+    Query the Inference contract for available models, pricing, and endpoints.
+  </Step>
+  <Step title="Acknowledge a provider">
+    One-time on-chain action that records the provider's TEE signer to your account.
+  </Step>
+  <Step title="Make requests">
+    The SDK generates a session token; you send OpenAI-compatible HTTP requests.
+  </Step>
+  <Step title="Settle on-chain">
+    The provider deducts tokens from your sub-account based on actual usage.
+  </Step>
+</Steps>
+
+## Why 0G Compute
+
+- **Up to 90% cheaper** — pay only for compute used, no monthly minimums. Compare to $5,000–50,000/month for dedicated cloud GPUs or $0.03+ per request on managed APIs.
+- **Instantly available** — access thousands of GPUs globally with 50–100ms latency
+- **OpenAI-compatible** — drop-in replacement at the HTTP layer; works with the OpenAI Python SDK
+- **TEE-verified** — every response is cryptographically signed by a Trusted Execution Environment
+- **Decentralized** — providers are matched on-chain, no single vendor controls access
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Install the SDK" icon="download" href="/compute/installation">
+    Set up your environment and create a broker in under 5 minutes.
+  </Card>
+  <Card title="Run your first inference" icon="bolt" href="/compute/inference">
+    Fund an account and make a chat completion request.
+  </Card>
+</CardGroup>
+
 <Note>
-This page is a stub. Content coming soon.
+  For protocol-level details and ecosystem docs, see the official [0G Labs documentation](https://docs.0g.ai).
 </Note>
