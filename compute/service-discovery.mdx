@@ -1,8 +1,229 @@
 ---
 title: "Service Discovery"
-description: "List AI providers, inspect service metadata, and browse read-only without a wallet."
+description: "List AI providers on the 0G Compute Network, inspect service metadata and health, and browse without a wallet."
 ---
 
-<Note>
-This page is a stub. Content coming soon.
-</Note>
+Every AI provider on 0G Compute is registered on-chain in the Inference contract. This page covers how to discover providers, inspect their metadata, browse without a wallet, and use **extractors** to compute billing for different service types.
+
+## List services with a broker
+
+If you already have a funded broker, list services directly from the inference manager:
+
+```python
+services = broker.inference.list_service()
+
+for s in services:
+    print(f"{s.model:40s}  type={s.service_type}")
+    print(f"  provider: {s.provider}")
+    print(f"  url:      {s.url}")
+    print(f"  in/out:   {s.input_price} / {s.output_price} wei per unit")
+    print(f"  verifiable: {s.is_verifiable()}")
+```
+
+### Pagination
+
+`list_service()` accepts pagination arguments:
+
+```python
+services = broker.inference.list_service(
+    offset                 = 0,
+    limit                  = 20,
+    include_unacknowledged = True,
+)
+```
+
+- `offset` and `limit` page through large result sets
+- `include_unacknowledged=False` hides services whose TEE signer hasn't been acknowledged by anyone on-chain — useful if you only want production-ready providers
+
+### Get a specific service
+
+```python
+service = broker.inference.get_service("0xProvider...")
+```
+
+Raises `ServiceNotFoundError` if the provider address isn't registered.
+
+### Service metadata
+
+`get_service_metadata()` returns just the endpoint and model, with `/v1/proxy` automatically appended to the URL:
+
+```python
+meta = broker.inference.get_service_metadata(provider)
+# {'endpoint': 'http://provider.example.com/v1/proxy', 'model': 'qwen/qwen-2.5-7b-instruct'}
+```
+
+## Browse without a wallet
+
+You don't need a private key to list services — use `create_read_only_broker` for wallet-less discovery. This is the right tool for UIs that want to show available providers before the user connects a wallet.
+
+```python
+from zerog_py_sdk import create_read_only_broker
+
+browser = create_read_only_broker(network="testnet")   # or "mainnet"
+services = browser.list_service()
+
+for s in services:
+    print(f"{s.model:40s}  {s.provider}")
+```
+
+### Include health metrics
+
+`list_service_with_detail` augments each service with uptime and response-time data from the network's monitoring API:
+
+```python
+detailed = browser.list_service_with_detail()
+
+for s in detailed:
+    if s.health_metrics:
+        print(
+            f"{s.model:40s}  "
+            f"uptime={s.health_metrics.uptime:.1f}%  "
+            f"avg_resp={s.health_metrics.avg_response_time:.0f}ms  "
+            f"status={s.health_metrics.status}"
+        )
+```
+
+`health_metrics` is `None` for services the monitoring API hasn't scored yet.
+
+Read-only brokers also expose `get_service(provider_address)` which returns a `ServiceWithDetail` (includes the raw `additional_info` JSON).
+
+## The ServiceMetadata object
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `provider` | `str` | Provider wallet address — globally unique identifier |
+| `service_type` | `str` | `chatbot`, `text-to-image`, `image-editing`, `speech-to-text` |
+| `url` | `str` | Base URL (without `/v1/proxy` suffix) |
+| `input_price` | `int` | Wei per input unit (token / image / etc.) |
+| `output_price` | `int` | Wei per output unit |
+| `updated_at` | `int` | Unix timestamp of last metadata update |
+| `model` | `str` | Model identifier (e.g. `qwen/qwen-2.5-7b-instruct`) |
+| `verifiability` | `str` | `TeeML` for TEE-verified providers, empty string otherwise |
+
+Helper method:
+
+```python
+service.is_verifiable()   # True if verifiability is non-empty
+```
+
+### Filtering
+
+Standard Python filtering covers most needs:
+
+```python
+# Chatbots only
+chatbots = [s for s in services if s.service_type == "chatbot"]
+
+# TEE-verified only
+verified = [s for s in services if s.is_verifiable()]
+
+# Cheapest chatbot by input price
+cheapest = min(
+    (s for s in services if s.service_type == "chatbot"),
+    key=lambda s: s.input_price,
+)
+```
+
+## Extractors — compute billing per service type
+
+Different service types bill differently (per-token for chatbots, per-image for generation, etc.). **Extractors** know how to read input/output counts from request and response payloads for each type.
+
+```python
+extractor = broker.inference.get_extractor(provider_address)
+
+# After a chat completion
+usage_json = '{"prompt_tokens": 150, "completion_tokens": 300}'
+in_count   = extractor.get_input_count(usage_json)    # 150
+out_count  = extractor.get_output_count(usage_json)   # 300
+
+# Compute total cost
+service = extractor.get_svc_info()
+cost_wei = in_count * service.input_price + out_count * service.output_price
+print(f"Cost: {cost_wei} wei ({cost_wei / 10**18} OG)")
+```
+
+### Extractor types
+
+| Service type | Class | Input source | Output source |
+|--------------|-------|--------------|---------------|
+| `chatbot` | `ChatBotExtractor` | `usage.prompt_tokens` | `usage.completion_tokens` |
+| `text-to-image` | `TextToImageExtractor` | request `n` (default 1) | always 0 |
+| `image-editing` | `ImageEditingExtractor` | request `n` (default 1) | always 0 |
+| `speech-to-text` | `SpeechToTextExtractor` | always 0 | `usage.output_tokens` |
+
+### Manual extractor construction
+
+Bypass `get_extractor` to avoid the contract call:
+
+```python
+from zerog_py_sdk import create_extractor
+
+extractor = create_extractor(service)   # service is a ServiceMetadata
+```
+
+Or pick a class directly from `EXTRACTOR_REGISTRY`:
+
+```python
+from zerog_py_sdk import EXTRACTOR_REGISTRY
+
+cls = EXTRACTOR_REGISTRY["chatbot"]
+extractor = cls(service)
+```
+
+`create_extractor` raises `ValueError` on unknown service types.
+
+## End-to-end discovery example
+
+```python
+from zerog_py_sdk import create_read_only_broker
+
+# Browse without a wallet
+browser = create_read_only_broker(network="testnet")
+
+# Get the 20 cheapest TEE-verified chatbots
+services = browser.list_service_with_detail(limit=20)
+chatbots = [
+    s for s in services
+    if s.service_type == "chatbot"
+    and s.verifiability   # TEE-verified
+]
+chatbots.sort(key=lambda s: s.input_price)
+
+for s in chatbots[:5]:
+    uptime = s.health_metrics.uptime if s.health_metrics else "?"
+    print(f"{s.model:40s}  in={s.input_price}  uptime={uptime}")
+```
+
+## API at a glance
+
+### `InferenceManager` (from a funded broker)
+
+| Method | Returns |
+|--------|---------|
+| `list_service(offset=0, limit=20, include_unacknowledged=True)` | `list[ServiceMetadata]` |
+| `get_service(provider_address)` | `ServiceMetadata` |
+| `get_service_metadata(provider_address)` | `{'endpoint', 'model'}` |
+| `get_extractor(provider_address)` | `Extractor` |
+
+### `ReadOnlyInferenceBroker` (no wallet)
+
+| Method | Returns |
+|--------|---------|
+| `list_service(offset=0, limit=20, include_unacknowledged=True)` | `list[ServiceWithDetail]` |
+| `list_service_with_detail(...)` | `list[ServiceWithDetail]` with `health_metrics` |
+| `get_service(provider_address)` | `ServiceWithDetail` |
+
+### `create_extractor` / `EXTRACTOR_REGISTRY`
+
+Factory and registry for building extractors from a `ServiceMetadata`.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Inference" icon="bolt" href="/compute/inference">
+    Send requests to the provider you just discovered.
+  </Card>
+  <Card title="Account Management" icon="wallet" href="/compute/account-management">
+    Fund your ledger and allocate sub-account balances.
+  </Card>
+</CardGroup>
