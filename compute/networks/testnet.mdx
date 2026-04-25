@@ -1,0 +1,92 @@
+---
+title: "Testnet (Galileo)"
+description: "0G Galileo Testnet network parameters, RPC endpoints, contract addresses, faucets, and block explorers for the 0G Compute SDK."
+---
+
+The 0G **Galileo** testnet is the public sandbox for development and testing. The SDK auto-detects testnet from the chain ID — pass `network="testnet"` to `create_broker()` to connect.
+
+## Network parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Network name | `0G-Galileo-Testnet` |
+| Chain ID | `16602` |
+| Token symbol | `0G` |
+| Block explorer | [chainscan-galileo.0g.ai](https://chainscan-galileo.0g.ai) |
+| RPC endpoint | `https://evmrpc-testnet.0g.ai` |
+
+<Note>
+  The default RPC is suitable for development. For production traffic, use a third-party provider (QuickNode, ThirdWeb, Ankr, dRPC NodeCloud).
+</Note>
+
+## Compute contract addresses
+
+The SDK ships these addresses and resolves them automatically from the chain ID. You only need them if you're calling the contracts directly outside the SDK.
+
+| Contract | Address |
+|----------|---------|
+| Ledger | `0xE70830508dAc0A97e6c087c75f402f9Be669E406` |
+| Inference Serving | `0xa79F4c8311FF93C06b8CfB403690cc987c93F91E` |
+| Fine-tuning Serving | `0xC6C075D8039763C8f1EbE580be5ADdf2fd6941bA` |
+
+Override them in code if needed:
+
+```python
+broker = create_broker(
+    private_key       = "0x...",
+    network           = "testnet",
+    ledger_address    = "0x...",
+    inference_address = "0x...",
+    fine_tuning_address = "0x...",
+)
+```
+
+## Connect from Python
+
+```python
+from zerog_py_sdk import create_broker
+
+broker = create_broker(
+    private_key = "0xYOUR_PRIVATE_KEY",
+    network     = "testnet",
+)
+print(f"Chain ID: {broker.web3.eth.chain_id}")   # 16602
+print(f"Address:  {broker.get_address()}")
+```
+
+## Get testnet tokens
+
+| Source | URL | Limits |
+|--------|-----|--------|
+| Official faucet | [faucet.0g.ai](https://faucet.0g.ai) | 0.1 0G per wallet daily |
+| Hackathon faucet | [0g-faucet-hackathon.vercel.app](https://0g-faucet-hackathon.vercel.app) | Use code **`AGENT-2026`** for additional tokens |
+| Google Cloud faucet | [Web3 faucet](https://cloud.google.com/application/web3/faucet/0g/galileo) | — |
+
+## Dev mode
+
+Set `ZG_DEV_MODE=true` (or `NEXT_PUBLIC_ZG_DEV_MODE=true`) to use the `testnet_dev` contract addresses, which point at a separate development deployment on the same chain ID. Most users won't need this.
+
+```bash
+export ZG_DEV_MODE=true
+```
+
+## Add to MetaMask
+
+| Field | Value |
+|-------|-------|
+| Network name | `0G-Galileo-Testnet` |
+| New RPC URL | `https://evmrpc-testnet.0g.ai` |
+| Chain ID | `16602` |
+| Currency symbol | `0G` |
+| Block explorer URL | `https://chainscan-galileo.0g.ai` |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Mainnet" icon="globe" href="/compute/networks/mainnet">
+    When you're ready for production traffic.
+  </Card>
+  <Card title="Inference" icon="bolt" href="/compute/inference">
+    Run your first AI inference on testnet.
+  </Card>
+</CardGroup>

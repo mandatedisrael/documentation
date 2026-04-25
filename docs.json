@@ -24,6 +24,13 @@
             ]
           },
           {
+            "group": "Networks",
+            "pages": [
+              "compute/networks/testnet",
+              "compute/networks/mainnet"
+            ]
+          },
+          {
             "group": "Guides",
             "pages": [
               "compute/inference",
@@ -45,6 +52,13 @@
             "pages": [
               "storage/introduction",
               "storage/installation"
+            ]
+          },
+          {
+            "group": "Networks",
+            "pages": [
+              "storage/networks/testnet",
+              "storage/networks/mainnet"
             ]
           },
           {

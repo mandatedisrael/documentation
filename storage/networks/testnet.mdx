@@ -1,0 +1,79 @@
+---
+title: "Testnet (Galileo)"
+description: "0G Galileo Testnet network parameters, RPC endpoints, indexer URL, contract addresses, and faucets for the 0G Storage SDK."
+---
+
+The 0G **Galileo** testnet is the public sandbox for storage development and testing. Use the testnet RPC and indexer URLs in your `Indexer` and `Uploader` config.
+
+## Network parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Network name | `0G-Galileo-Testnet` |
+| Chain ID | `16602` |
+| Token symbol | `0G` |
+| Block explorer | [chainscan-galileo.0g.ai](https://chainscan-galileo.0g.ai) |
+| Storage explorer | [storagescan-galileo.0g.ai](https://storagescan-galileo.0g.ai) |
+| Blockchain RPC | `https://evmrpc-testnet.0g.ai` |
+| Indexer RPC | `https://indexer-storage-testnet-turbo.0g.ai` |
+
+<Note>
+  Use a third-party RPC provider (QuickNode, ThirdWeb, Ankr, dRPC NodeCloud) for higher throughput in production-like workloads.
+</Note>
+
+## Storage contract addresses
+
+| Contract | Address |
+|----------|---------|
+| Flow | `0x22E03a6A89B950F1c82ec5e74F8eCa321a105296` |
+| Mine | `0x00A9E9604b0538e06b268Fb297Df333337f9593b` |
+| Reward | `0xA97B57b4BdFEA2D0a25e535bd849ad4e6C440A69` |
+
+The SDK reads the Flow contract address from the storage node's `networkIdentity` automatically — you rarely need it directly.
+
+## Connect from Python
+
+```python
+from core.indexer import Indexer
+from web3 import Web3
+
+INDEXER_RPC    = "https://indexer-storage-testnet-turbo.0g.ai"
+BLOCKCHAIN_RPC = "https://evmrpc-testnet.0g.ai"
+
+indexer = Indexer(INDEXER_RPC)
+web3    = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC))
+
+print(f"Chain ID: {web3.eth.chain_id}")             # 16602
+print(f"Trusted nodes: {len(indexer.get_sharded_nodes()['trusted'])}")
+```
+
+## Get testnet tokens
+
+| Source | URL | Limits |
+|--------|-----|--------|
+| Official faucet | [faucet.0g.ai](https://faucet.0g.ai) | 0.1 0G per wallet daily |
+| Hackathon faucet | [0g-faucet-hackathon.vercel.app](https://0g-faucet-hackathon.vercel.app) | Use code **`AGENT-2026`** for additional tokens |
+| Google Cloud faucet | [Web3 faucet](https://cloud.google.com/application/web3/faucet/0g/galileo) | — |
+
+Storage submissions cost a small fee paid to the Flow contract — typically a fraction of an OG for files up to a few megabytes.
+
+## Add to MetaMask
+
+| Field | Value |
+|-------|-------|
+| Network name | `0G-Galileo-Testnet` |
+| New RPC URL | `https://evmrpc-testnet.0g.ai` |
+| Chain ID | `16602` |
+| Currency symbol | `0G` |
+| Block explorer URL | `https://chainscan-galileo.0g.ai` |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Mainnet" icon="globe" href="/storage/networks/mainnet">
+    Switch to production endpoints when ready.
+  </Card>
+  <Card title="Storage SDK" icon="file-arrow-up" href="/storage/storage-sdk">
+    Upload and download your first file on testnet.
+  </Card>
+</CardGroup>

@@ -1,0 +1,82 @@
+---
+title: "Mainnet"
+description: "0G Mainnet network parameters, RPC endpoints, indexer URL, and contract addresses for the 0G Storage SDK."
+---
+
+The 0G mainnet hosts production storage workloads. Files uploaded to mainnet are anchored on the production Flow contract and propagated across the production storage node network.
+
+<Warning>
+  Mainnet storage submissions consume real 0G tokens. Test on [Galileo testnet](/storage/networks/testnet) first.
+</Warning>
+
+## Network parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Network name | `0G Mainnet` |
+| Chain ID | `16661` |
+| Token symbol | `0G` |
+| Block explorer | [chainscan.0g.ai](https://chainscan.0g.ai) |
+| Storage explorer | [storagescan.0g.ai](https://storagescan.0g.ai) |
+| Ecosystem explorer | [explorer.0g.ai](https://explorer.0g.ai/mainnet/home) |
+| Blockchain RPC | `https://evmrpc.0g.ai` |
+| Indexer RPC | `https://indexer-storage-turbo.0g.ai` |
+
+<Note>
+  Use a paid RPC provider for production storage workloads — the public endpoint is rate-limited.
+</Note>
+
+## Storage contract addresses
+
+| Contract | Address |
+|----------|---------|
+| Flow | `0x62D4144dB0F0a6fBBaeb6296c785C71B3D57C526` |
+| Mine | `0xCd01c5Cd953971CE4C2c9bFb95610236a7F414fe` |
+| Reward | `0x457aC76B58ffcDc118AABD6DbC63ff9072880870` |
+
+## Connect from Python
+
+```python
+from core.indexer import Indexer
+from web3 import Web3
+
+INDEXER_RPC    = "https://indexer-storage-turbo.0g.ai"
+BLOCKCHAIN_RPC = "https://evmrpc.0g.ai"
+
+indexer = Indexer(INDEXER_RPC)
+web3    = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC))
+
+print(f"Chain ID: {web3.eth.chain_id}")             # 16661
+```
+
+## Add to MetaMask
+
+| Field | Value |
+|-------|-------|
+| Network name | `0G Mainnet` |
+| New RPC URL | `https://evmrpc.0g.ai` |
+| Chain ID | `16661` |
+| Currency symbol | `0G` |
+| Block explorer URL | `https://chainscan.0g.ai` |
+
+## Production checklist
+
+Before pushing real data to mainnet:
+
+- ✅ Verify the upload path on [testnet](/storage/networks/testnet) end-to-end
+- ✅ Switch to a paid RPC provider for the blockchain RPC
+- ✅ Confirm the storage fee with `indexer.upload(..., opts={"fee": ...})` on a small file first
+- ✅ For files over 4 GB, use [`splitable_upload`](/storage/large-files) and store the returned `rootHashes` durably — losing one means losing access to that fragment
+- ✅ Cache `rootHash` values with timestamps so you can wait the ~3–5 minute propagation window before downloads
+- ✅ Use [retry options](/storage/error-handling) on uploads to handle transient node failures
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Testnet" icon="flask" href="/storage/networks/testnet">
+    Develop and test against Galileo first.
+  </Card>
+  <Card title="Storage SDK" icon="file-arrow-up" href="/storage/storage-sdk">
+    Upload and download files on the production network.
+  </Card>
+</CardGroup>

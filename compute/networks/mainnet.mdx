@@ -1,0 +1,79 @@
+---
+title: "Mainnet"
+description: "0G Mainnet network parameters, RPC endpoints, contract addresses, and block explorers for the 0G Compute SDK."
+---
+
+The 0G mainnet is the production network. Pass `network="mainnet"` to `create_broker()` (it's also the SDK's default if you don't specify a network).
+
+<Warning>
+  Mainnet operations consume real 0G tokens. Test thoroughly on [Galileo testnet](/compute/networks/testnet) before deploying to mainnet.
+</Warning>
+
+## Network parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Network name | `0G Mainnet` |
+| Chain ID | `16661` |
+| Token symbol | `0G` |
+| Block explorer | [chainscan.0g.ai](https://chainscan.0g.ai) |
+| Ecosystem explorer | [explorer.0g.ai](https://explorer.0g.ai/mainnet/home) |
+| RPC endpoint | `https://evmrpc.0g.ai` |
+
+<Note>
+  Use a third-party RPC provider for production workloads (QuickNode, ThirdWeb, Ankr). The public endpoint is rate-limited.
+</Note>
+
+## Compute contract addresses
+
+The SDK resolves these automatically from the chain ID — only needed if you call contracts directly.
+
+| Contract | Address |
+|----------|---------|
+| Ledger | `0x2dE54c845Cd948B72D2e32e39586fe89607074E3` |
+| Inference Serving | `0x47340d900bdFec2BD393c626E12ea0656F938d84` |
+| Fine-tuning Serving | `0x4e3474095518883744ddf135b7E0A23301c7F9c0` |
+
+## Connect from Python
+
+```python
+from zerog_py_sdk import create_broker
+
+broker = create_broker(
+    private_key = "0xYOUR_PRIVATE_KEY",
+    network     = "mainnet",            # or omit — mainnet is the default
+)
+print(f"Chain ID: {broker.web3.eth.chain_id}")   # 16661
+```
+
+## Add to MetaMask
+
+| Field | Value |
+|-------|-------|
+| Network name | `0G Mainnet` |
+| New RPC URL | `https://evmrpc.0g.ai` |
+| Chain ID | `16661` |
+| Currency symbol | `0G` |
+| Block explorer URL | `https://chainscan.0g.ai` |
+
+## Production checklist
+
+Before sending real workloads to mainnet:
+
+- ✅ Run the same code paths on [testnet](/compute/networks/testnet) successfully
+- ✅ Switch to a paid RPC provider for higher throughput and reliability
+- ✅ Set up monitoring on `broker.ledger.get_ledger()` so you don't run out of funds mid-flight
+- ✅ Consider [auto-funding](/compute/account-management#auto-funding) for unattended services
+- ✅ Verify provider attestations with [`verify_service`](/compute/response-verification) before sending sensitive prompts
+- ✅ Use [persistent API keys](/compute/api-keys-session-tokens) instead of ephemeral session tokens for long-lived servers
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Testnet" icon="flask" href="/compute/networks/testnet">
+    Develop and test against the Galileo testnet first.
+  </Card>
+  <Card title="Account Management" icon="wallet" href="/compute/account-management">
+    Fund and manage your mainnet ledger.
+  </Card>
+</CardGroup>
