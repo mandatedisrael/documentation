@@ -243,7 +243,7 @@ For retryable errors (transient network issues, "too many data writing" from bus
     This is a non-fatal warning. The SDK submitted the file to the Flow contract and some direct segment uploads failed, but other nodes will propagate the data via gossip. The upload is considered successful once the transaction is confirmed.
   </Accordion>
   <Accordion title="Insufficient balance for storage fee">
-    Top up your wallet with more 0G tokens. For testnet, use [faucet.0g.ai](https://faucet.0g.ai). For a rough estimate, 1 OG covers a few hundred kilobytes of storage.
+    Top up your wallet with more 0G tokens. For testnet, use [faucet.0g.ai](https://faucet.0g.ai), or claim additional tokens from the hackathon faucet at [0g-faucet-hackathon.vercel.app](https://0g-faucet-hackathon.vercel.app) using the code **`AGENT-2026`**. For a rough estimate, 1 OG covers a few hundred kilobytes of storage.
   </Accordion>
   <Accordion title="'Account required for transaction'">
     The `upload_opts` dict must include the `"account"` key — the signer used to submit the Flow contract transaction. This is in addition to the `signer` positional argument.
