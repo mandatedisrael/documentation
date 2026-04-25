@@ -11,6 +11,18 @@
     "default": "light"
   },
   "favicon": "/favicon.svg",
+  "metadata": {
+    "og:title": "0G Python SDK",
+    "og:description": "Decentralized AI inference, fine-tuning, and storage on the 0G Network — for Python.",
+    "og:image": "/images/og-image.png",
+    "og:image:width": "1200",
+    "og:image:height": "630",
+    "og:type": "website",
+    "twitter:card": "summary_large_image",
+    "twitter:title": "0G Python SDK",
+    "twitter:description": "Decentralized AI inference, fine-tuning, and storage on the 0G Network — for Python.",
+    "twitter:image": "/images/og-image.png"
+  },
   "navigation": {
     "tabs": [
       {
