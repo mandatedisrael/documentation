@@ -24,12 +24,21 @@ Keys and values are arbitrary bytes. Size limits:
 
 ## Read values
 
-`KvClient` wraps a storage node's KV RPC. Point it at any storage node RPC URL:
+`KvClient` wraps a storage node's KV RPC. Use the indexer to dynamically discover a storage node, then point `KvClient` at it:
 
 ```python
+from core.indexer import Indexer
 from core.kv import KvClient
 
-kv = KvClient("http://storage-node.example.com:5678")
+# Discover a storage node via the indexer
+indexer = Indexer("https://indexer-storage-testnet-turbo.0g.ai")
+nodes, err = indexer.select_nodes(expected_replica=1)
+
+if err or len(nodes) == 0:
+    raise err or Exception("No nodes selected")
+
+# Use the first discovered node
+kv = KvClient(nodes[0].url)
 
 # Read a complete value (handles pagination automatically)
 value = kv.get_value(
